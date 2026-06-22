@@ -2976,6 +2976,52 @@ pub fn session_get_common(
     }
 }
 
+// ===================== Vietnamese Input FFI bridge =====================
+//
+// These functions expose the Vietnamese input composer (see
+// `crate::vietnamese_input`) to the Flutter UI via flutter_rust_bridge. They are
+// purely additive: when the feature is disabled (the default), they have no
+// effect on the existing keyboard pipeline. The generated Dart bindings are
+// consumed by the Flutter settings page and composition overlay (task 16.x).
+//
+// _Requirements: 4.2, 14.1_
+
+/// Enable or disable Vietnamese input composition globally.
+///
+/// Mirrors the settings toggle. When disabled, in-flight composition buffers
+/// are cleared by the integration layer so no stale state is retained.
+pub fn vietnamese_input_set_enabled(enabled: bool) {
+    crate::vietnamese_input::integration::set_enabled(enabled);
+}
+
+/// Return whether Vietnamese input composition is currently enabled.
+///
+/// Synchronous so the Flutter UI can read the feature state without awaiting.
+pub fn vietnamese_input_is_enabled() -> SyncReturn<bool> {
+    SyncReturn(crate::vietnamese_input::integration::is_vietnamese_input_enabled())
+}
+
+/// Set the active input method from a string identifier sent by Flutter.
+///
+/// Accepts `"telex"`, `"vni"`, `"vni_windows"`, or `"off"` (case-insensitive).
+/// Unrecognized values are ignored, leaving the current method unchanged.
+pub fn vietnamese_input_set_method(method: String) {
+    let _recognized = crate::vietnamese_input::integration::set_method_str(&method);
+}
+
+/// Return the current in-flight composition text for the composition overlay.
+///
+/// Returns the buffered (not-yet-committed) composed text, or an empty string
+/// when nothing is being composed. Synchronous so the overlay can poll/read it
+/// cheaply on the UI thread. `session_id` identifies the remote session whose
+/// composition is being read; per-session routing is finalized alongside the
+/// keyboard hook, so the global composer's current buffer is returned here.
+pub fn vietnamese_input_get_composition(session_id: String) -> SyncReturn<String> {
+    let _ = session_id;
+    let preview = crate::vietnamese_input::integration::composition_preview().unwrap_or_default();
+    SyncReturn(preview)
+}
+
 #[cfg(target_os = "android")]
 pub mod server_side {
     use hbb_common::{config, log};

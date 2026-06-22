@@ -790,6 +790,25 @@ pub fn event_to_key_events(
             }
         }
     }
+
+    // Vietnamese input interception point.
+    //
+    // When (and only when) Vietnamese input is enabled, route the produced key
+    // events through the Vietnamese composer before they are sent to the remote
+    // session. This is gated OFF by default (`is_vietnamese_input_enabled()`
+    // returns `false`), so the keyboard pipeline is unchanged until the feature
+    // is enabled by later tasks (FFI bridge 12.2, configuration 14.1).
+    //
+    // The composer transforms the vector in place of the normal send: typed
+    // characters may be buffered (dropped here), replaced with composed Unicode
+    // text, or passed through unchanged. Per-session routing uses a default
+    // session id for now; the real current-session id is wired in task 12.2.
+    if crate::vietnamese_input::integration::is_vietnamese_input_enabled() {
+        let session_id = crate::vietnamese_input::integration::default_session_id();
+        key_events =
+            crate::vietnamese_input::integration::compose_key_events(&session_id, key_events);
+    }
+
     key_events
 }
 
