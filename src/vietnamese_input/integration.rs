@@ -55,6 +55,9 @@ use std::sync::Mutex;
 
 use hbb_common::log;
 use hbb_common::message_proto::{key_event, ControlKey, KeyEvent};
+// Brings the `protobuf::Enum` trait into scope so `ControlKey::X.value()`
+// resolves (the trait provides the `value()` method on generated enums).
+use hbb_common::protobuf::Enum;
 
 use super::{
     ComposerResult, InputMethod, NormalizationForm, VietSessionId, VietnameseComposer, DEFAULT_TIMEOUT,
