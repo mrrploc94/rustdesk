@@ -12,7 +12,7 @@
 
 use std::time::{Duration, Instant};
 
-use super::{SessionID, TransformStep};
+use super::{VietSessionId, TransformStep};
 
 /// Default maximum number of characters held in flight by the buffer.
 pub const DEFAULT_CAPACITY: usize = 20;
@@ -33,7 +33,7 @@ pub struct CompositionBuffer {
     /// Maximum buffer capacity (in characters).
     pub capacity: usize,
     /// Session identifier this buffer belongs to.
-    pub session_id: SessionID,
+    pub session_id: VietSessionId,
     /// Timestamp of the most recent keystroke recorded into this buffer.
     ///
     /// Updated via [`touch`](CompositionBuffer::touch) every time the composer
@@ -65,7 +65,7 @@ impl CompositionBuffer {
     ///
     /// The buffer is created with the default capacity of
     /// [`DEFAULT_CAPACITY`] characters.
-    pub fn new(session_id: SessionID) -> Self {
+    pub fn new(session_id: VietSessionId) -> Self {
         Self {
             current: String::new(),
             raw_input: Vec::new(),

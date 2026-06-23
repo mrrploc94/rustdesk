@@ -45,7 +45,7 @@ use std::time::{Duration, Instant};
 use super::composer::MEMORY_LIMIT_BYTES;
 use super::config::{OptionStore, VietnameseInputConfig};
 use super::{
-    ComposerResult, InputMethod, NormalizationForm, SessionID, VietnameseComposer, DEFAULT_TIMEOUT,
+    ComposerResult, InputMethod, NormalizationForm, VietSessionId, VietnameseComposer, DEFAULT_TIMEOUT,
 };
 
 // ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ const FAR_FUTURE: Duration = Duration::from_secs(3600);
 
 /// Feed a whole character sequence into one session, returning the final
 /// [`ComposerResult`].
-fn feed(composer: &mut VietnameseComposer, sid: &SessionID, seq: &str) -> ComposerResult {
+fn feed(composer: &mut VietnameseComposer, sid: &VietSessionId, seq: &str) -> ComposerResult {
     let mut last = ComposerResult::Consumed;
     for ch in seq.chars() {
         last = composer.process_key(sid, ch);
@@ -68,7 +68,7 @@ fn feed(composer: &mut VietnameseComposer, sid: &SessionID, seq: &str) -> Compos
     last
 }
 
-fn sid(name: &str) -> SessionID {
+fn sid(name: &str) -> VietSessionId {
     name.to_string()
 }
 
@@ -204,7 +204,7 @@ fn sweep_flushes_all_stale_sessions_as_raw() {
 
     // Everything stale under ZERO; collect into a map for order-independent
     // assertions (sweep order follows HashMap iteration).
-    let flushed: HashMap<SessionID, String> =
+    let flushed: HashMap<VietSessionId, String> =
         composer.flush_timed_out_sessions(Duration::ZERO).into_iter().collect();
     assert_eq!(flushed.get(&a), Some(&"ngh".to_string()));
     assert_eq!(flushed.get(&b), Some(&"tr".to_string()));
@@ -226,7 +226,7 @@ fn app_switch_flushes_all_sessions_as_raw_text() {
     feed(&mut composer, &b, "vieejt"); // composes "việt" in flight
     assert_eq!(composer.session_count(), 2);
 
-    let flushed: HashMap<SessionID, String> =
+    let flushed: HashMap<VietSessionId, String> =
         composer.flush_all_sessions().into_iter().collect();
 
     // Raw keystrokes are emitted, not the composed glyphs.
@@ -340,7 +340,7 @@ fn empty_store_yields_defaults() {
 #[test]
 fn ten_concurrent_sessions_compose_correctly_within_memory_budget() {
     let mut composer = VietnameseComposer::with_method(InputMethod::Telex);
-    let sessions: Vec<SessionID> = (0..10).map(|i| format!("perf-session-{i}")).collect();
+    let sessions: Vec<VietSessionId> = (0..10).map(|i| format!("perf-session-{i}")).collect();
 
     let sequence: Vec<char> = "dduowjc".chars().collect();
 
@@ -397,7 +397,7 @@ fn ten_concurrent_sessions_compose_correctly_within_memory_budget() {
 #[test]
 fn memory_returns_to_baseline_after_flushing_sessions() {
     let mut composer = VietnameseComposer::with_method(InputMethod::Telex);
-    let sessions: Vec<SessionID> = (0..10).map(|i| format!("mem-session-{i}")).collect();
+    let sessions: Vec<VietSessionId> = (0..10).map(|i| format!("mem-session-{i}")).collect();
 
     for s in &sessions {
         feed(&mut composer, s, "dduowjc");

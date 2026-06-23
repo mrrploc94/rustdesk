@@ -40,7 +40,7 @@ pub use config_parser::{
 use hbb_common::message_proto::KeyEvent;
 
 /// Unique session identifier (matches RustDesk's session identifier).
-pub type SessionID = String;
+pub type VietSessionId = String;
 
 /// The set of Vietnamese input methods supported by the composer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

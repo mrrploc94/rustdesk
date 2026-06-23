@@ -43,7 +43,7 @@
 //! - **Enabling the feature** (`set_enabled`) and per-method configuration are
 //!   wired from persisted config in task 14.1; the gate defaults to **off**.
 //! - **Per-session routing**: the composer is already keyed by
-//!   [`SessionID`](super::SessionID), but resolving the *current* session id at
+//!   [`VietSessionId`](super::VietSessionId), but resolving the *current* session id at
 //!   the call site (and the FFI to switch methods / read composition state) is
 //!   added in task 12.2. Until then a single default session id is used.
 //! - **Keyboard shortcuts** (toggle / cycle method) and intelligent backspace
@@ -57,7 +57,7 @@ use hbb_common::log;
 use hbb_common::message_proto::{key_event, ControlKey, KeyEvent};
 
 use super::{
-    ComposerResult, InputMethod, NormalizationForm, SessionID, VietnameseComposer, DEFAULT_TIMEOUT,
+    ComposerResult, InputMethod, NormalizationForm, VietSessionId, VietnameseComposer, DEFAULT_TIMEOUT,
 };
 
 lazy_static::lazy_static! {
@@ -235,7 +235,7 @@ pub fn diagnostic_dump() -> String {
 /// Intended to be driven by an idle timer in RustDesk's event loop.
 ///
 /// _Requirements: 2.6, 12.1, 12.4_
-pub fn flush_timed_out(session_id: &SessionID) -> Option<String> {
+pub fn flush_timed_out(session_id: &VietSessionId) -> Option<String> {
     lock_composer().flush_if_timed_out(session_id, DEFAULT_TIMEOUT)
 }
 
@@ -244,7 +244,7 @@ pub fn flush_timed_out(session_id: &SessionID) -> Option<String> {
 /// (useful for tests or a configurable `timeout_ms`).
 ///
 /// _Requirements: 2.6, 12.1, 12.4_
-pub fn flush_timed_out_with(session_id: &SessionID, timeout: std::time::Duration) -> Option<String> {
+pub fn flush_timed_out_with(session_id: &VietSessionId, timeout: std::time::Duration) -> Option<String> {
     lock_composer().flush_if_timed_out(session_id, timeout)
 }
 
@@ -255,7 +255,7 @@ pub fn flush_timed_out_with(session_id: &SessionID, timeout: std::time::Duration
 /// session. The caller sends each returned raw text to its remote session.
 ///
 /// _Requirements: 2.6, 12.1, 12.4_
-pub fn flush_all_timed_out() -> Vec<(SessionID, String)> {
+pub fn flush_all_timed_out() -> Vec<(VietSessionId, String)> {
     lock_composer().flush_timed_out_sessions(DEFAULT_TIMEOUT)
 }
 
@@ -266,7 +266,7 @@ pub fn flush_all_timed_out() -> Vec<(SessionID, String)> {
 /// Returns each flushed `(session_id, raw_text)` pair for the caller to send.
 ///
 /// _Requirements: 12.3, 12.4_
-pub fn flush_on_app_switch() -> Vec<(SessionID, String)> {
+pub fn flush_on_app_switch() -> Vec<(VietSessionId, String)> {
     lock_composer().flush_all_sessions()
 }
 
@@ -305,7 +305,7 @@ pub fn is_composer_over_memory_limit() -> bool {
 /// [`flushed_to_key_events`]); an empty vector means usage was within budget.
 ///
 /// _Requirements: 13.6, 13.7_
-pub fn enforce_memory_limit() -> Vec<(SessionID, String)> {
+pub fn enforce_memory_limit() -> Vec<(VietSessionId, String)> {
     lock_composer().enforce_memory_limit()
 }
 
@@ -337,7 +337,7 @@ pub fn flushed_to_key_events(text: &str) -> Vec<KeyEvent> {
 /// the real current-session id, callers may pass [`default_session_id`].
 ///
 /// _Requirements: 1.8, 2.5, 6.2, 13.1, 13.2_
-pub fn compose_key_events(session_id: &SessionID, events: Vec<KeyEvent>) -> Vec<KeyEvent> {
+pub fn compose_key_events(session_id: &VietSessionId, events: Vec<KeyEvent>) -> Vec<KeyEvent> {
     // Snapshot the configurable shortcuts (cheap `Copy`) before locking the
     // composer, so the two global locks are never held simultaneously.
     let shortcuts = *lock_shortcuts();
@@ -354,7 +354,7 @@ pub fn compose_key_events(session_id: &SessionID, events: Vec<KeyEvent>) -> Vec<
 /// process-wide state.
 fn compose_key_events_with(
     composer: &mut VietnameseComposer,
-    session_id: &SessionID,
+    session_id: &VietSessionId,
     events: Vec<KeyEvent>,
 ) -> Vec<KeyEvent> {
     compose_key_events_with_config(composer, &ShortcutConfig::default(), session_id, events)
@@ -367,7 +367,7 @@ fn compose_key_events_with(
 fn compose_key_events_with_config(
     composer: &mut VietnameseComposer,
     shortcuts: &ShortcutConfig,
-    session_id: &SessionID,
+    session_id: &VietSessionId,
     events: Vec<KeyEvent>,
 ) -> Vec<KeyEvent> {
     let mut out = Vec::with_capacity(events.len());
@@ -400,7 +400,7 @@ fn compose_key_events_with_config(
 /// The default session id used by the gated call site until per-session routing
 /// is wired in task 12.2.
 #[inline]
-pub fn default_session_id() -> SessionID {
+pub fn default_session_id() -> VietSessionId {
     DEFAULT_SESSION_ID.to_string()
 }
 
@@ -422,7 +422,7 @@ enum DispatchOutcome {
 /// never disturbed by the composer.
 fn dispatch_key_event(
     composer: &mut VietnameseComposer,
-    session_id: &SessionID,
+    session_id: &VietSessionId,
     event: &KeyEvent,
 ) -> DispatchOutcome {
     let typed = match typed_char(event) {
@@ -756,7 +756,7 @@ mod tests {
     use super::*;
     use hbb_common::message_proto::KeyboardMode;
 
-    fn sid() -> SessionID {
+    fn sid() -> VietSessionId {
         "test-session".to_string()
     }
 

@@ -10,7 +10,7 @@
 //! - **Engine routing**: forwards keystrokes to the active engine, or passes
 //!   them straight through when the method is [`InputMethod::Off`].
 //! - **Per-session state**: maintains an independent [`CompositionBuffer`] for
-//!   each [`SessionID`], created lazily on the first keystroke and removed when
+//!   each [`VietSessionId`], created lazily on the first keystroke and removed when
 //!   the session closes. This guarantees composition state never leaks between
 //!   remote sessions.
 //! - **Commit handling**: when an engine reports a commit trigger (space,
@@ -46,7 +46,7 @@ use hbb_common::message_proto::KeyEvent;
 
 use super::{
     CompositionBuffer, ComposerResult, CompositionState, InputMethod, InputMethodEngine,
-    NormalizationForm, SessionID, TelexEngine, TransformResult, UnicodeNormalizer, VniEngine,
+    NormalizationForm, VietSessionId, TelexEngine, TransformResult, UnicodeNormalizer, VniEngine,
     VniWindowsEngine,
 };
 
@@ -109,7 +109,7 @@ pub const LOG_TARGET: &str = "vietnamese_input";
 pub struct VietnameseComposer {
     /// Per-session composition buffers, keyed by session identifier. Created
     /// lazily on the first composable keystroke for a session.
-    buffers: HashMap<SessionID, CompositionBuffer>,
+    buffers: HashMap<VietSessionId, CompositionBuffer>,
     /// The currently active input method. When [`InputMethod::Off`], all
     /// keystrokes pass through unchanged.
     active_method: InputMethod,
@@ -278,7 +278,7 @@ impl VietnameseComposer {
     ///   [`enforce_memory_limit`](Self::enforce_memory_limit).
     ///
     /// _Requirements: 6.2, 6.3, 13.1, 13.2, 13.5, 13.6, 13.7_
-    pub fn process_key(&mut self, session_id: &SessionID, key: char) -> ComposerResult {
+    pub fn process_key(&mut self, session_id: &VietSessionId, key: char) -> ComposerResult {
         let start = Instant::now();
         let result = self.process_key_inner(session_id, key);
         // Best-effort resource guards (never alter `result`).
@@ -290,7 +290,7 @@ impl VietnameseComposer {
     /// Core keystroke processing, wrapped by [`process_key`](Self::process_key)
     /// with the resource guards. Kept separate so the timing measurement covers
     /// the full composition work for a single keystroke.
-    fn process_key_inner(&mut self, session_id: &SessionID, key: char) -> ComposerResult {
+    fn process_key_inner(&mut self, session_id: &VietSessionId, key: char) -> ComposerResult {
         // Per-keystroke diagnostics (requirement 17.1). Naturally gated by the
         // debug log level, so this is silent in normal operation.
         log::debug!(
@@ -397,7 +397,7 @@ impl VietnameseComposer {
     ///
     /// Returns `None` when no buffer exists for the session or the buffer is
     /// empty. Used to drive the composition overlay.
-    pub fn get_buffer_content(&self, session_id: &SessionID) -> Option<&str> {
+    pub fn get_buffer_content(&self, session_id: &VietSessionId) -> Option<&str> {
         self.buffers
             .get(session_id)
             .filter(|b| !b.is_empty())
@@ -438,7 +438,7 @@ impl VietnameseComposer {
 
         // Sort by session id so the dump is deterministic regardless of the
         // HashMap's iteration order.
-        let mut session_ids: Vec<&SessionID> = self.buffers.keys().collect();
+        let mut session_ids: Vec<&VietSessionId> = self.buffers.keys().collect();
         session_ids.sort();
         for sid in session_ids {
             let buffer = &self.buffers[sid];
@@ -461,7 +461,7 @@ impl VietnameseComposer {
     /// Returns the raw keystroke text (empty if there was nothing buffered), or
     /// `None` if the session has no buffer. Used when an incomplete sequence
     /// must be emitted as-is (e.g. on timeout or application switch).
-    pub fn flush_session(&mut self, session_id: &SessionID) -> Option<String> {
+    pub fn flush_session(&mut self, session_id: &VietSessionId) -> Option<String> {
         self.buffers.get_mut(session_id).map(|b| b.flush_raw())
     }
 
@@ -484,7 +484,7 @@ impl VietnameseComposer {
     /// _Requirements: 2.6, 12.1, 12.4_
     pub fn flush_if_timed_out(
         &mut self,
-        session_id: &SessionID,
+        session_id: &VietSessionId,
         timeout: Duration,
     ) -> Option<String> {
         // Copy the active method out before the mutable buffer borrow so the
@@ -520,8 +520,8 @@ impl VietnameseComposer {
     /// sending each returned raw text to the corresponding remote session.
     ///
     /// _Requirements: 2.6, 12.1, 12.4_
-    pub fn flush_timed_out_sessions(&mut self, timeout: Duration) -> Vec<(SessionID, String)> {
-        let session_ids: Vec<SessionID> = self.buffers.keys().cloned().collect();
+    pub fn flush_timed_out_sessions(&mut self, timeout: Duration) -> Vec<(VietSessionId, String)> {
+        let session_ids: Vec<VietSessionId> = self.buffers.keys().cloned().collect();
         let mut flushed = Vec::new();
         for sid in session_ids {
             if let Some(raw) = self.flush_if_timed_out(&sid, timeout) {
@@ -546,9 +546,9 @@ impl VietnameseComposer {
     /// layer exposes it as `flush_on_app_switch`).
     ///
     /// _Requirements: 12.3, 12.4_
-    pub fn flush_all_sessions(&mut self) -> Vec<(SessionID, String)> {
+    pub fn flush_all_sessions(&mut self) -> Vec<(VietSessionId, String)> {
         let method = self.active_method;
-        let session_ids: Vec<SessionID> = self.buffers.keys().cloned().collect();
+        let session_ids: Vec<VietSessionId> = self.buffers.keys().cloned().collect();
         let mut flushed = Vec::new();
         for sid in session_ids {
             let raw = {
@@ -575,7 +575,7 @@ impl VietnameseComposer {
     ///
     /// Called when a remote session closes so that no stale composition state
     /// or memory is retained for it.
-    pub fn clear_session(&mut self, session_id: &SessionID) {
+    pub fn clear_session(&mut self, session_id: &VietSessionId) {
         self.buffers.remove(session_id);
     }
 
@@ -603,7 +603,7 @@ impl VietnameseComposer {
     /// session releases its state.
     ///
     /// _Requirements: 6.4, 11.1_
-    pub fn has_session(&self, session_id: &SessionID) -> bool {
+    pub fn has_session(&self, session_id: &VietSessionId) -> bool {
         self.buffers.contains_key(session_id)
     }
 
@@ -634,7 +634,7 @@ impl VietnameseComposer {
     ///   the remote system performs the deletion.
     ///
     /// _Requirements: 1.7, 2.8, 10.1, 10.2, 10.3, 10.4, 10.5, 10.6, 10.9_
-    pub fn handle_backspace(&mut self, session_id: &SessionID) -> ComposerResult {
+    pub fn handle_backspace(&mut self, session_id: &VietSessionId) -> ComposerResult {
         // Attempt to reverse one transformation step. A missing buffer behaves
         // the same as an exhausted history: there is nothing local to revert.
         let reverted = self
@@ -680,7 +680,7 @@ impl VietnameseComposer {
                 .buffers
                 .iter()
                 .map(|(id, buffer)| {
-                    // The HashMap stores the key (an owned SessionID) alongside
+                    // The HashMap stores the key (an owned VietSessionId) alongside
                     // the buffer; count the key's heap bytes too.
                     id.capacity() + estimate_buffer_bytes(buffer)
                 })
@@ -709,7 +709,7 @@ impl VietnameseComposer {
     /// [`process_key`](Self::process_key).
     ///
     /// _Requirements: 13.6, 13.7_
-    pub fn enforce_memory_limit(&mut self) -> Vec<(SessionID, String)> {
+    pub fn enforce_memory_limit(&mut self) -> Vec<(VietSessionId, String)> {
         let used = self.estimated_memory_bytes();
         if used <= MEMORY_LIMIT_BYTES {
             self.memory_warning_active = false;
@@ -737,7 +737,7 @@ impl VietnameseComposer {
     /// degradation.
     ///
     /// _Requirements: 6.2, 6.3, 13.1, 13.5_
-    fn guard_processing_time(&mut self, session_id: &SessionID, key: char, elapsed: Duration) {
+    fn guard_processing_time(&mut self, session_id: &VietSessionId, key: char, elapsed: Duration) {
         if elapsed <= PROCESSING_BUDGET {
             // A keystroke within budget breaks any run of slow keystrokes.
             self.consecutive_slow_keystrokes = 0;
@@ -789,7 +789,7 @@ impl VietnameseComposer {
 
     /// Remove a session's buffer if it exists and is empty, to avoid retaining
     /// empty entries created by a lone trigger keystroke.
-    fn discard_if_empty(&mut self, session_id: &SessionID) {
+    fn discard_if_empty(&mut self, session_id: &VietSessionId) {
         if self
             .buffers
             .get(session_id)
@@ -846,13 +846,13 @@ fn estimate_buffer_bytes(buffer: &CompositionBuffer) -> usize {
 mod tests {
     use super::*;
 
-    fn session() -> SessionID {
+    fn session() -> VietSessionId {
         "session-1".to_string()
     }
 
     /// Feed a whole sequence into the composer for one session, returning the
     /// final result. Intermediate results are asserted to be `Consumed`.
-    fn feed(composer: &mut VietnameseComposer, sid: &SessionID, seq: &str) -> ComposerResult {
+    fn feed(composer: &mut VietnameseComposer, sid: &VietSessionId, seq: &str) -> ComposerResult {
         let mut last = ComposerResult::Consumed;
         for ch in seq.chars() {
             last = composer.process_key(sid, ch);
@@ -1083,7 +1083,7 @@ mod tests {
         let mut composer = VietnameseComposer::with_method(InputMethod::Telex);
 
         // Ten distinct sessions, each with its own distinct composition.
-        let sessions: Vec<SessionID> = (0..10).map(|i| format!("session-{i}")).collect();
+        let sessions: Vec<VietSessionId> = (0..10).map(|i| format!("session-{i}")).collect();
 
         // Drive every session with the classic "dduowjc" → "được" sequence,
         // interleaving one keystroke at a time across all sessions so that a
@@ -1123,7 +1123,7 @@ mod tests {
         // Twelve sessions, each typing a *different* Telex sequence, fed one
         // keystroke per session per round. Each expected composed result is the
         // committed Vietnamese text for that session's raw sequence.
-        let cases: Vec<(SessionID, &str, &str)> = vec![
+        let cases: Vec<(VietSessionId, &str, &str)> = vec![
             ("s0".into(), "as", "á"),
             ("s1".into(), "af", "à"),
             ("s2".into(), "ar", "ả"),
@@ -2093,7 +2093,7 @@ mod tests {
 
         for _ in 0..150 {
             let session_count = rng.next(6) + 3; // 3..=8 concurrent sessions
-            let mut sids: Vec<SessionID> = Vec::with_capacity(session_count);
+            let mut sids: Vec<VietSessionId> = Vec::with_capacity(session_count);
             let mut seqs: Vec<Vec<char>> = Vec::with_capacity(session_count);
             for i in 0..session_count {
                 sids.push(format!("iso-session-{i}"));
