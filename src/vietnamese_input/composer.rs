@@ -370,6 +370,12 @@ impl VietnameseComposer {
                         out,
                         method
                     );
+                    // The composition has been committed and the buffer is now
+                    // empty; drop the empty entry so the session is not retained
+                    // (consistent with the timeout / backspace / invalid flush
+                    // paths, and required for correct `session_count` /
+                    // `has_session` accounting and memory release).
+                    self.discard_if_empty(session_id);
                     ComposerResult::Compose(out)
                 }
             }
