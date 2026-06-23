@@ -11,6 +11,7 @@ import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_home_page.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
+import 'package:flutter_hbb/desktop/pages/vietnamese_input_settings.dart';
 import 'package:flutter_hbb/desktop/widgets/remote_toolbar.dart';
 import 'package:flutter_hbb/mobile/widgets/dialog.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
@@ -55,6 +56,7 @@ enum SettingsTabKey {
   safety,
   network,
   display,
+  vietnameseInput,
   plugin,
   account,
   printer,
@@ -74,6 +76,9 @@ class DesktopSettingPage extends StatefulWidget {
         bind.mainGetBuildinOption(key: kOptionHideNetworkSetting) != 'Y')
       SettingsTabKey.network,
     if (!bind.isIncomingOnly()) SettingsTabKey.display,
+    // Vietnamese input composition applies when controlling a remote machine,
+    // so it is offered for outgoing (non-incoming-only) desktop sessions.
+    if (!isWeb && !bind.isIncomingOnly()) SettingsTabKey.vietnameseInput,
     if (!isWeb && !bind.isIncomingOnly() && bind.pluginFeatureIsEnabled())
       SettingsTabKey.plugin,
     if (!bind.isDisableAccount()) SettingsTabKey.account,
@@ -196,6 +201,10 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
           settingTabs.add(_TabInfo(tab, 'Display',
               Icons.desktop_windows_outlined, Icons.desktop_windows));
           break;
+        case SettingsTabKey.vietnameseInput:
+          settingTabs.add(_TabInfo(tab, 'Vietnamese input',
+              Icons.keyboard_outlined, Icons.keyboard));
+          break;
         case SettingsTabKey.plugin:
           settingTabs.add(_TabInfo(
               tab, 'Plugin', Icons.extension_outlined, Icons.extension));
@@ -232,6 +241,9 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
           break;
         case SettingsTabKey.display:
           children.add(const _Display());
+          break;
+        case SettingsTabKey.vietnameseInput:
+          children.add(const VietnameseInputSettingsPage());
           break;
         case SettingsTabKey.plugin:
           children.add(const _Plugin());
