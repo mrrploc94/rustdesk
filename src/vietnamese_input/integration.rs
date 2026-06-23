@@ -1304,4 +1304,116 @@ mod tests {
             "diagnostic dump should report the active session count, got: {dump}"
         );
     }
+
+    // --- Property 14: Ambiguous Sequence Vietnamese Preference (task 13.3) ---
+    //
+    // Feature: vietnamese-input-support, Property 14: Ambiguous Sequence Vietnamese Preference
+    //
+    // For any input sequence that is both a valid Vietnamese composition prefix
+    // *and* a valid English word fragment, the composer prefers the Vietnamese
+    // interpretation until the composition is explicitly committed or
+    // invalidated. We exercise this with base-vowel + Telex tone-key combos —
+    // e.g. "as"→"á", "is"→"í", "us"→"ú", "os"→"ó", "es"→"é" — each of which is
+    // simultaneously a real English word/fragment. While composing (before any
+    // commit trigger such as space/punctuation) the in-flight buffer MUST hold
+    // the Vietnamese-composed glyph rather than the raw English letters, and
+    // nothing may be emitted to the remote session yet. This demonstrates the
+    // Vietnamese interpretation is preferred.
+    //
+    // The test uses a tiny inline deterministic LCG PRNG (no external crates)
+    // to generate many base-vowel + tone-key combinations, and checks each
+    // against an independent, hand-derived reference of the expected glyph.
+    //
+    // Validates: Requirements 12.2
+
+    /// Independent reference: the precomposed (NFC) Vietnamese glyph for a base
+    /// vowel carrying a Telex tone (`s`=sắc, `f`=huyền, `r`=hỏi, `x`=ngã,
+    /// `j`=nặng). Hand-derived from the Telex specification, independent of the
+    /// composer's own `COMPOSE_TABLE`.
+    fn expected_toned_vowel(base: char, tone: char) -> char {
+        match (base, tone) {
+            ('a', 's') => 'á', ('a', 'f') => 'à', ('a', 'r') => 'ả', ('a', 'x') => 'ã', ('a', 'j') => 'ạ',
+            ('e', 's') => 'é', ('e', 'f') => 'è', ('e', 'r') => 'ẻ', ('e', 'x') => 'ẽ', ('e', 'j') => 'ẹ',
+            ('i', 's') => 'í', ('i', 'f') => 'ì', ('i', 'r') => 'ỉ', ('i', 'x') => 'ĩ', ('i', 'j') => 'ị',
+            ('o', 's') => 'ó', ('o', 'f') => 'ò', ('o', 'r') => 'ỏ', ('o', 'x') => 'õ', ('o', 'j') => 'ọ',
+            ('u', 's') => 'ú', ('u', 'f') => 'ù', ('u', 'r') => 'ủ', ('u', 'x') => 'ũ', ('u', 'j') => 'ụ',
+            ('y', 's') => 'ý', ('y', 'f') => 'ỳ', ('y', 'r') => 'ỷ', ('y', 'x') => 'ỹ', ('y', 'j') => 'ỵ',
+            _ => unreachable!("unsupported base/tone combo: {base}{tone}"),
+        }
+    }
+
+    /// Minimal deterministic 64-bit LCG (Knuth MMIX constants). Inline so the
+    /// property test needs no external PRNG/property crate. Returns the next
+    /// state; callers derive bounded values from its high bits.
+    fn lcg_next(state: u64) -> u64 {
+        state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407)
+    }
+
+    #[test]
+    fn property_14_ambiguous_sequence_prefers_vietnamese() {
+        // Base vowels and Telex tone keys whose 2-key sequences double as common
+        // English words/fragments ("as", "is", "us", "of"→handled elsewhere, …).
+        const BASES: [char; 6] = ['a', 'e', 'i', 'o', 'u', 'y'];
+        const TONES: [char; 5] = ['s', 'f', 'r', 'x', 'j'];
+
+        // A few explicit ambiguous English words to guarantee coverage of the
+        // motivating cases regardless of what the PRNG samples.
+        let anchors: [(char, char); 4] = [
+            ('a', 's'), // "as"
+            ('i', 's'), // "is"
+            ('u', 's'), // "us"
+            ('o', 's'), // "os"
+        ];
+
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15; // fixed seed → reproducible
+        let total_cases = 240usize; // well above the 100-case minimum
+
+        for case in 0..total_cases {
+            let (base, tone) = if case < anchors.len() {
+                anchors[case]
+            } else {
+                state = lcg_next(state);
+                let base = BASES[((state >> 33) as usize) % BASES.len()];
+                state = lcg_next(state);
+                let tone = TONES[((state >> 33) as usize) % TONES.len()];
+                (base, tone)
+            };
+
+            // Fresh composer per case → fully isolated composition state.
+            let mut composer = VietnameseComposer::with_method(InputMethod::Telex);
+
+            // Type the base vowel: buffered, nothing emitted to the remote yet.
+            let after_base = compose_key_events_with(&mut composer, &sid(), vec![typed(base)]);
+            assert!(
+                after_base.is_empty(),
+                "base vowel '{base}' should be buffered (Vietnamese interpretation), \
+                 not emitted as raw English; got {after_base:?}"
+            );
+            assert_eq!(
+                composer.get_buffer_content(&sid()),
+                Some(base.to_string().as_str()),
+                "buffer should hold the base vowel '{base}' while composing"
+            );
+
+            // Type the tone key: still composing, the buffer now holds the
+            // Vietnamese glyph and nothing has been sent to the remote.
+            let after_tone = compose_key_events_with(&mut composer, &sid(), vec![typed(tone)]);
+            assert!(
+                after_tone.is_empty(),
+                "the ambiguous sequence \"{base}{tone}\" must remain an in-flight \
+                 Vietnamese composition (no remote output) before commit; got {after_tone:?}"
+            );
+
+            let expected = expected_toned_vowel(base, tone).to_string();
+            assert_eq!(
+                composer.get_buffer_content(&sid()),
+                Some(expected.as_str()),
+                "while composing, the buffer for \"{base}{tone}\" must hold the \
+                 Vietnamese-composed glyph \"{expected}\" (preferred over the raw \
+                 English fragment \"{base}{tone}\")"
+            );
+        }
+    }
 }

@@ -525,4 +525,127 @@ mod tests {
         // The terminator did not alter the composed text.
         assert_eq!(buffer.current_text(), "á");
     }
+
+    // --- Additional uppercase vowel-mark + tone variants -----------------
+
+    #[test]
+    fn uppercase_vowel_marks_and_tones() {
+        // Uppercase circumflex/horn/breve marks not covered above.
+        assert_eq!(compose("EE"), "Ê");
+        assert_eq!(compose("OO"), "Ô");
+        assert_eq!(compose("UW"), "Ư");
+        assert_eq!(compose("AW"), "Ă");
+        // Uppercase tones on a single vowel beyond "AS".
+        assert_eq!(compose("AF"), "À");
+        assert_eq!(compose("AR"), "Ả");
+        assert_eq!(compose("AX"), "Ã");
+        assert_eq!(compose("AJ"), "Ạ");
+    }
+
+    // --- Property 1: Telex Composition Correctness -----------------------
+    // Feature: vietnamese-input-support, Property 1: Telex Composition Correctness
+
+    /// Deterministic linear-congruential PRNG (no external dependency).
+    ///
+    /// Uses the classic Numerical Recipes constants. `next` advances the state
+    /// and returns a bounded index, giving reproducible "random" selections.
+    struct Lcg {
+        state: u64,
+    }
+
+    impl Lcg {
+        fn new(seed: u64) -> Self {
+            Self { state: seed }
+        }
+
+        /// Advance the state and return a value in `[0, bound)`.
+        fn next(&mut self, bound: usize) -> usize {
+            self.state = self
+                .state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            // Use the high bits, which have the best statistical quality.
+            ((self.state >> 33) as usize) % bound
+        }
+    }
+
+    /// A "valid Telex syllable" building block: the keystroke prefix that
+    /// produces a (possibly marked) base vowel, paired with that vowel's six
+    /// tone variants in the canonical order
+    /// `[none, huyền, sắc, hỏi, ngã, nặng]`.
+    ///
+    /// This is an INDEPENDENT reference lookup table written directly from the
+    /// standard Telex specification — it is not derived from the engine's own
+    /// `COMPOSE_TABLE`, so the property test cross-checks the engine against a
+    /// separately authored source of truth.
+    const TELEX_REFERENCE: &[(&str, [char; 6])] = &[
+        // Plain base vowels.
+        ("a", ['a', 'à', 'á', 'ả', 'ã', 'ạ']),
+        ("e", ['e', 'è', 'é', 'ẻ', 'ẽ', 'ẹ']),
+        ("i", ['i', 'ì', 'í', 'ỉ', 'ĩ', 'ị']),
+        ("o", ['o', 'ò', 'ó', 'ỏ', 'õ', 'ọ']),
+        ("u", ['u', 'ù', 'ú', 'ủ', 'ũ', 'ụ']),
+        ("y", ['y', 'ỳ', 'ý', 'ỷ', 'ỹ', 'ỵ']),
+        // Circumflex via vowel doubling: aa→â, ee→ê, oo→ô.
+        ("aa", ['â', 'ầ', 'ấ', 'ẩ', 'ẫ', 'ậ']),
+        ("ee", ['ê', 'ề', 'ế', 'ể', 'ễ', 'ệ']),
+        ("oo", ['ô', 'ồ', 'ố', 'ổ', 'ỗ', 'ộ']),
+        // Breve / horn via w: aw→ă, ow→ơ, uw→ư.
+        ("aw", ['ă', 'ằ', 'ắ', 'ẳ', 'ẵ', 'ặ']),
+        ("ow", ['ơ', 'ờ', 'ớ', 'ở', 'ỡ', 'ợ']),
+        ("uw", ['ư', 'ừ', 'ứ', 'ử', 'ữ', 'ự']),
+    ];
+
+    /// Tone-trigger keys paired with their column index in `TELEX_REFERENCE`.
+    /// `None` represents the neutral (no-tone) case.
+    const TELEX_TONE_KEYS: &[(Option<char>, usize)] = &[
+        (None, 0),
+        (Some('f'), 1),
+        (Some('s'), 2),
+        (Some('r'), 3),
+        (Some('x'), 4),
+        (Some('j'), 5),
+    ];
+
+    /// Uppercase a single composed glyph, mirroring how the engine preserves
+    /// case from an uppercase keystroke.
+    fn to_upper_char(c: char) -> char {
+        c.to_uppercase().next().unwrap_or(c)
+    }
+
+    #[test]
+    fn property_telex_composition_correctness() {
+        // For any valid Telex input sequence (base vowel, optional vowel-mark
+        // modifier, optional tone key), the engine's composed output must equal
+        // the glyph the standard Telex specification prescribes.
+        let mut rng = Lcg::new(0x5193_7A21_C0FF_EE42);
+        let cases = 500; // Well above the >=100-case minimum.
+
+        for _ in 0..cases {
+            let (prefix, variants) = TELEX_REFERENCE[rng.next(TELEX_REFERENCE.len())];
+            let (tone_key, tone_idx) = TELEX_TONE_KEYS[rng.next(TELEX_TONE_KEYS.len())];
+            let uppercase = rng.next(2) == 1;
+
+            // Build the keystroke sequence: vowel-mark prefix + optional tone.
+            let mut input: String = prefix.to_string();
+            if let Some(tk) = tone_key {
+                input.push(tk);
+            }
+
+            // Expected glyph from the independent reference table.
+            let mut expected = variants[tone_idx].to_string();
+
+            if uppercase {
+                input = input.to_uppercase();
+                expected = expected.chars().map(to_upper_char).collect();
+            }
+
+            let actual = compose(&input);
+            assert_eq!(
+                actual, expected,
+                "Telex sequence {:?} should compose to {:?} but produced {:?}",
+                input, expected, actual
+            );
+        }
+    }
 }

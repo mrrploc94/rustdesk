@@ -351,4 +351,188 @@ mod tests {
         assert_eq!(result, TransformResult::CommitAndPass(' '));
         assert_eq!(buffer.current_text(), "á");
     }
+
+    // --- Additional override coverage (Requirement 3.2 customization) -----
+
+    #[test]
+    fn override_then_tone_preserves_processing_order() {
+        // With a Windows override remapping key 6 after 'a' to a breve (ă), the
+        // canonical order base → vowel mark → tone is still honoured: a tone
+        // typed after the override lands on the overridden glyph.
+        let mut overrides = HashMap::new();
+        overrides.insert(('a', '6'), 'ă');
+        let engine = VniWindowsEngine::with_overrides(overrides);
+        // base 'a' → override (6 → ă) → tone (1 → sắc) = "ắ".
+        assert_eq!(compose_win(&engine, "a61"), "ắ");
+    }
+
+    #[test]
+    fn override_applies_to_trailing_vowel_in_word() {
+        // The override targets the trailing vowel even when preceded by an
+        // onset consonant.
+        let mut overrides = HashMap::new();
+        overrides.insert(('a', '6'), 'ă');
+        let engine = VniWindowsEngine::with_overrides(overrides);
+        assert_eq!(compose_win(&engine, "ba6"), "bă");
+    }
+
+    // ---------------------------------------------------------------------
+    // Property 3: VNI Windows Composition Correctness
+    //
+    // Feature: vietnamese-input-support, Property 3: VNI Windows Composition
+    // Correctness
+    //
+    // For any valid VNI Windows sequence processed in the canonical order
+    // (base → vowel mark → tone), the output matches the VNI Windows
+    // specification. In the default (no-overrides) configuration, VNI Windows
+    // is defined to be identical to standard VNI, so correctness is asserted by
+    // two universal properties:
+    //
+    //   (a) Fallback parity: the default VNI Windows engine produces exactly the
+    //       same output as the standard VNI engine for every generated valid
+    //       sequence.
+    //   (b) Order convergence: for a single vowel carrying both a vowel mark and
+    //       a tone, the base→mark→tone ordering and the base→tone→mark ordering
+    //       converge on the same canonically composed glyph.
+    //
+    // **Validates: Requirements 3.6, 3.7**
+    // ---------------------------------------------------------------------
+
+    /// Minimal deterministic linear-congruential PRNG (no external crates).
+    ///
+    /// Uses the multiplier/increment from Knuth's MMIX so the sequence is well
+    /// distributed; the high bits are returned because LCG low bits have short
+    /// periods. Seeded deterministically so failures are reproducible.
+    struct Lcg {
+        state: u64,
+    }
+
+    impl Lcg {
+        fn new(seed: u64) -> Self {
+            Self { state: seed }
+        }
+
+        fn next_u32(&mut self) -> u32 {
+            self.state = self
+                .state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (self.state >> 33) as u32
+        }
+
+        /// Uniformly pick an index in `0..n` (n must be > 0).
+        fn below(&mut self, n: usize) -> usize {
+            (self.next_u32() as usize) % n
+        }
+
+        /// Pick a random element from a non-empty slice.
+        fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
+            &items[self.below(items.len())]
+        }
+
+        /// Return `true` roughly `percent`% of the time.
+        fn chance(&mut self, percent: u32) -> bool {
+            self.next_u32() % 100 < percent
+        }
+    }
+
+    /// Valid VNI vowel-mark digits for a given base vowel (empty when the vowel
+    /// takes no vowel mark). Mirrors the resolution rules in the VNI engine.
+    fn valid_vowel_marks(vowel: char) -> &'static [char] {
+        match vowel {
+            'a' => &['6', '8'],
+            'e' => &['6'],
+            'o' => &['6', '7'],
+            'u' => &['6', '7'],
+            _ => &[],
+        }
+    }
+
+    /// Generate a pseudo-random, plausibly valid VNI keystroke sequence:
+    /// optional onset consonant(s) → base vowel → optional valid vowel-mark
+    /// digit → optional tone digit → optional coda consonant(s).
+    fn gen_vni_sequence(rng: &mut Lcg) -> String {
+        const ONSETS: &[&str] = &[
+            "", "b", "c", "d", "h", "k", "l", "m", "n", "ng", "ngh", "nh", "ph", "t", "th", "tr",
+            "v", "x",
+        ];
+        const VOWELS: &[char] = &['a', 'e', 'i', 'o', 'u', 'y'];
+        const TONES: &[char] = &['1', '2', '3', '4', '5'];
+        const CODAS: &[&str] = &["", "c", "ch", "m", "n", "ng", "nh", "p", "t"];
+
+        let mut seq = String::new();
+        seq.push_str(rng.pick(ONSETS));
+
+        let vowel = *rng.pick(VOWELS);
+        seq.push(vowel);
+
+        // Optional valid vowel mark for this vowel.
+        let marks = valid_vowel_marks(vowel);
+        if !marks.is_empty() && rng.chance(70) {
+            seq.push(*rng.pick(marks));
+        }
+
+        // Optional tone mark.
+        if rng.chance(70) {
+            seq.push(*rng.pick(TONES));
+        }
+
+        // Optional coda consonant(s).
+        seq.push_str(rng.pick(CODAS));
+
+        seq
+    }
+
+    #[test]
+    fn property_default_windows_matches_standard_vni() {
+        // (a) Fallback parity over many generated valid VNI sequences.
+        let engine = VniWindowsEngine::new();
+        let mut rng = Lcg::new(0x5654_4E49_5F57_494E); // "VNI_WIN" bytes as seed.
+
+        for i in 0..200 {
+            let seq = gen_vni_sequence(&mut rng);
+            let win = compose_win(&engine, &seq);
+            let vni = compose_vni(&seq);
+            assert_eq!(
+                win, vni,
+                "iteration {i}: default VNI Windows diverged from standard VNI for input {seq:?} (win={win:?}, vni={vni:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn property_order_convergence_mark_and_tone() {
+        // (b) base→mark→tone and base→tone→mark converge on the same glyph, and
+        // both equal standard VNI — over many generated single-vowel cases.
+        const VOWELS: &[char] = &['a', 'e', 'o', 'u'];
+        const TONES: &[char] = &['1', '2', '3', '4', '5'];
+        let engine = VniWindowsEngine::new();
+        let mut rng = Lcg::new(0x4F52_4445_5200_0001); // "ORDER" bytes as seed.
+
+        let mut checked = 0usize;
+        for i in 0..200 {
+            let vowel = *rng.pick(VOWELS);
+            let marks = valid_vowel_marks(vowel);
+            let mark = *rng.pick(marks);
+            let tone = *rng.pick(TONES);
+
+            let mark_then_tone: String = [vowel, mark, tone].iter().collect();
+            let tone_then_mark: String = [vowel, tone, mark].iter().collect();
+
+            let a = compose_win(&engine, &mark_then_tone);
+            let b = compose_win(&engine, &tone_then_mark);
+            assert_eq!(
+                a, b,
+                "iteration {i}: orderings diverged for vowel {vowel:?} mark {mark:?} tone {tone:?} ({mark_then_tone:?}={a:?}, {tone_then_mark:?}={b:?})"
+            );
+            // And both match standard VNI (fallback correctness).
+            assert_eq!(
+                a,
+                compose_vni(&mark_then_tone),
+                "iteration {i}: order-converged result diverged from standard VNI for {mark_then_tone:?}"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 100, "expected at least 100 generated cases, ran {checked}");
+    }
 }

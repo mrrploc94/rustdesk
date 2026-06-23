@@ -892,4 +892,266 @@ mod tests {
         let config = config_with_rules(vec![]);
         assert_eq!(ConfigParser::validate_rules(&config), Ok(()));
     }
+
+    // ---- Additional config-parser edge cases (Task 14.7) -----------------
+
+    #[test]
+    fn invalid_toml_syntax_reports_line_number() {
+        // An unterminated string on line 3 is a TOML syntax error.
+        let toml_str = "id = \"x\"\nname = \"X\"\nrules = [oops\n";
+        let err = ConfigParser::parse(toml_str, ConfigFormat::Toml).unwrap_err();
+        match err {
+            ParseError::SyntaxError { line, .. } => {
+                assert!(line >= 1, "line number should be reported, got {}", line);
+            }
+            other => panic!("expected SyntaxError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn empty_input_is_rejected() {
+        // Empty documents are not valid configurations in either format.
+        assert!(ConfigParser::parse("", ConfigFormat::Json).is_err());
+        // An empty TOML document parses as an empty table, which is missing
+        // the required `id` field.
+        match ConfigParser::parse("", ConfigFormat::Toml).unwrap_err() {
+            ParseError::MissingField { .. } | ParseError::SyntaxError { .. } => {}
+            other => panic!("expected MissingField or SyntaxError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn input_at_exact_max_size_is_not_rejected_for_size() {
+        // The size guard rejects strictly greater than the maximum, so an
+        // input of exactly MAX bytes must fail for *content* reasons (it is
+        // not valid JSON) rather than as FileTooLarge.
+        let exact = "a".repeat(MAX_CONFIG_FILE_SIZE);
+        let err = ConfigParser::parse(&exact, ConfigFormat::Json).unwrap_err();
+        assert!(
+            !matches!(err, ParseError::FileTooLarge { .. }),
+            "input of exactly MAX bytes must not be rejected as too large, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn invalid_output_char_value_is_rejected() {
+        // `output_char` must be a single character; a multi-character string
+        // is a data error, surfaced as a parse failure rather than a panic.
+        let json = r#"{ "id": "x", "name": "X",
+            "rules": [{ "input_sequence": "aa", "output_char": "ab" }] }"#;
+        assert!(ConfigParser::parse(json, ConfigFormat::Json).is_err());
+    }
+
+    // ---- Property-based generators (deterministic, dependency-free) ------
+    //
+    // The two properties below need many random-but-valid `InputMethodConfig`
+    // values. To avoid adding a property-testing dependency, a small inline
+    // linear-congruential PRNG drives hand-written generators. Seeds are fixed
+    // so failures are reproducible.
+
+    /// A tiny deterministic PRNG (LCG core + xorshift output mixing).
+    struct Lcg {
+        state: u64,
+    }
+
+    impl Lcg {
+        fn new(seed: u64) -> Self {
+            Lcg { state: seed }
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            // LCG step with well-known 64-bit constants.
+            self.state = self
+                .state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            // Mix the output so low bits are usable.
+            let mut x = self.state;
+            x ^= x >> 33;
+            x = x.wrapping_mul(0xff51afd7ed558ccd);
+            x ^= x >> 33;
+            x
+        }
+
+        /// Uniform-ish value in `0..n` (n must be > 0).
+        fn below(&mut self, n: usize) -> usize {
+            (self.next_u64() % n as u64) as usize
+        }
+
+        /// Inclusive range `lo..=hi` (requires `lo <= hi`).
+        fn range(&mut self, lo: usize, hi: usize) -> usize {
+            lo + self.below(hi - lo + 1)
+        }
+
+        fn flip(&mut self) -> bool {
+            self.next_u64() & 1 == 1
+        }
+    }
+
+    /// Distinct output characters (mix of ASCII and Vietnamese, all unique).
+    const OUTPUT_CHARS: &[char] = &[
+        'a', 'â', 'ă', 'e', 'ê', 'o', 'ô', 'ơ', 'u', 'ư', 'i', 'y', 'đ', 'á', 'à', 'ả', 'ã', 'ạ',
+        'Đ', 'Ê',
+    ];
+
+    /// Characters used to build input sequences (kept to plain ASCII letters).
+    const SEQ_CHARS: &[char] = &['a', 'b', 'c', 'd', 'e', 'o', 'u', 'w', 's', 'f', 'r', 'x', 'j'];
+
+    fn gen_sequence(rng: &mut Lcg) -> String {
+        let len = rng.range(1, 4);
+        (0..len).map(|_| SEQ_CHARS[rng.below(SEQ_CHARS.len())]).collect()
+    }
+
+    fn gen_char_vec(rng: &mut Lcg) -> Vec<char> {
+        let len = rng.range(1, 3);
+        (0..len)
+            .map(|_| OUTPUT_CHARS[rng.below(OUTPUT_CHARS.len())])
+            .collect()
+    }
+
+    fn gen_context(rng: &mut Lcg) -> Option<RuleContext> {
+        if !rng.flip() {
+            return None;
+        }
+        let preceding = if rng.flip() { Some(gen_char_vec(rng)) } else { None };
+        let not_preceding = if rng.flip() { Some(gen_char_vec(rng)) } else { None };
+        if preceding.is_none() && not_preceding.is_none() {
+            return None;
+        }
+        Some(RuleContext {
+            preceding,
+            not_preceding,
+        })
+    }
+
+    fn gen_metadata(rng: &mut Lcg) -> Option<ConfigMetadata> {
+        if !rng.flip() {
+            return None;
+        }
+        Some(ConfigMetadata {
+            version: format!("{}.{}", rng.range(0, 9), rng.range(0, 9)),
+            author: if rng.flip() {
+                Some(format!("author{}", rng.range(0, 99)))
+            } else {
+                None
+            },
+            description: if rng.flip() {
+                Some(format!("desc {}", rng.range(0, 99)))
+            } else {
+                None
+            },
+        })
+    }
+
+    fn gen_config(rng: &mut Lcg, i: usize) -> InputMethodConfig {
+        let rule_count = rng.range(1, 6);
+        let rules = (0..rule_count)
+            .map(|_| TransformationRule {
+                input_sequence: gen_sequence(rng),
+                output_char: OUTPUT_CHARS[rng.below(OUTPUT_CHARS.len())],
+                context: gen_context(rng),
+            })
+            .collect();
+        InputMethodConfig {
+            id: format!("method-{}", i),
+            name: format!("Method {}", i),
+            rules,
+            metadata: gen_metadata(rng),
+        }
+    }
+
+    // Feature: vietnamese-input-support, Property 10: Configuration Round-Trip
+    //
+    // **Property 10: Configuration Round-Trip**
+    // For any valid InputMethodConfig, parse(format(config)) == config
+    // (structurally identical) for BOTH JSON and TOML.
+    // **Validates: Requirements 16.5**
+    #[test]
+    fn property_10_configuration_round_trip() {
+        let mut rng = Lcg::new(0x1234_5678_9abc_def0);
+        for i in 0..150 {
+            let config = gen_config(&mut rng, i);
+
+            // JSON round-trip.
+            let json = ConfigPrettyPrinter::format(&config, ConfigFormat::Json);
+            let from_json = ConfigParser::parse(&json, ConfigFormat::Json)
+                .unwrap_or_else(|e| panic!("config {} JSON re-parse failed: {}\n{}", i, e, json));
+            assert_eq!(from_json, config, "JSON round-trip mismatch for config {}", i);
+
+            // TOML round-trip.
+            let toml_str = ConfigPrettyPrinter::format(&config, ConfigFormat::Toml);
+            let from_toml = ConfigParser::parse(&toml_str, ConfigFormat::Toml).unwrap_or_else(|e| {
+                panic!("config {} TOML re-parse failed: {}\n{}", i, e, toml_str)
+            });
+            assert_eq!(from_toml, config, "TOML round-trip mismatch for config {}", i);
+        }
+    }
+
+    // Feature: vietnamese-input-support, Property 11: Configuration Conflict Detection
+    //
+    // **Property 11: Configuration Conflict Detection**
+    // For rule sets with injected conflicting mappings (same input_sequence +
+    // same context -> different output_char), validate_rules detects and
+    // reports ALL conflicts.
+    // **Validates: Requirements 16.6, 16.7**
+    #[test]
+    fn property_11_configuration_conflict_detection() {
+        let mut rng = Lcg::new(0x0fed_cba9_8765_4321);
+        for iter in 0..120 {
+            // Base rules: each has a unique input sequence (and no context), so
+            // they never conflict among themselves and form no cycles (their
+            // multi-character inputs never equal a single-character output).
+            let base_count = rng.range(2, 8);
+            let base_rules: Vec<TransformationRule> = (0..base_count)
+                .map(|j| TransformationRule {
+                    input_sequence: format!("k{}_{}", iter, j),
+                    output_char: OUTPUT_CHARS[rng.below(OUTPUT_CHARS.len())],
+                    context: None,
+                })
+                .collect();
+
+            // Inject conflicts: re-use an existing input sequence with a
+            // guaranteed-different output character.
+            let mut rules = base_rules.clone();
+            let mut expected: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
+            let conflict_count = rng.range(1, base_count);
+            for _ in 0..conflict_count {
+                let idx = rng.below(base_count);
+                let base = &base_rules[idx];
+                // Pick an output distinct from the base rule's output. Since
+                // OUTPUT_CHARS holds distinct values, advancing to the next
+                // index always yields a different character.
+                let mut k = rng.below(OUTPUT_CHARS.len());
+                if OUTPUT_CHARS[k] == base.output_char {
+                    k = (k + 1) % OUTPUT_CHARS.len();
+                }
+                rules.push(TransformationRule {
+                    input_sequence: base.input_sequence.clone(),
+                    output_char: OUTPUT_CHARS[k],
+                    context: None,
+                });
+                expected.insert(base.input_sequence.clone());
+            }
+
+            let config = config_with_rules(rules);
+            let errors = ConfigParser::validate_rules(&config)
+                .expect_err("injected conflicts must fail validation");
+
+            // Every injected conflict must be reported, and no spurious ones.
+            let reported: std::collections::BTreeSet<String> = errors
+                .iter()
+                .filter_map(|e| match e {
+                    ValidationError::ConflictingMapping { input, .. } => Some(input.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                reported, expected,
+                "iteration {}: reported conflict set does not match injected set",
+                iter
+            );
+        }
+    }
 }

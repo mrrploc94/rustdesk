@@ -207,4 +207,177 @@ mod tests {
         // "uyê" style: "tuyên" -> t(0) u(1) y(2) ê(3) n(4); ê is priority.
         assert_eq!(TonePlacement::find_tone_target("tuyên"), Some(3));
     }
+
+    // ======================================================================
+    // Task 2.3 — Unit tests for tone placement
+    // ======================================================================
+    // These cover every two-vowel cluster called out in the task, the
+    // priority (quality-marked) vowels, three-vowel clusters resolving to the
+    // middle, and single/no-vowel edge cases.
+
+    #[test]
+    fn two_vowel_clusters_no_coda_resolve_per_rules() {
+        // Plain two-vowel clusters with no coda -> second vowel (index 1).
+        assert_eq!(TonePlacement::find_tone_target("oa"), Some(1));
+        assert_eq!(TonePlacement::find_tone_target("oe"), Some(1));
+        assert_eq!(TonePlacement::find_tone_target("oo"), Some(1));
+        assert_eq!(TonePlacement::find_tone_target("ua"), Some(1));
+        assert_eq!(TonePlacement::find_tone_target("ue"), Some(1));
+        assert_eq!(TonePlacement::find_tone_target("uo"), Some(1));
+        // "ưa": ư is NOT a priority vowel -> positional, no coda -> second (1).
+        assert_eq!(TonePlacement::find_tone_target("ưa"), Some(1));
+    }
+
+    #[test]
+    fn two_vowel_clusters_with_priority_vowel() {
+        // "uô": ô (index 1) is a priority vowel.
+        assert_eq!(TonePlacement::find_tone_target("uô"), Some(1));
+        // "ươ": ơ (index 1) wins over the non-priority ư.
+        assert_eq!(TonePlacement::find_tone_target("ươ"), Some(1));
+        // "iê": ê (index 1) is a priority vowel.
+        assert_eq!(TonePlacement::find_tone_target("iê"), Some(1));
+        // "uơ": ơ (index 1) is a priority vowel.
+        assert_eq!(TonePlacement::find_tone_target("uơ"), Some(1));
+    }
+
+    #[test]
+    fn priority_vowels_each_receive_tone_first() {
+        // Each quality-marked vowel ơ, ô, â, ă, ê takes the tone even when it
+        // is not in the positionally-favoured slot. Place each at index 0 of a
+        // two-vowel cluster that ends with no coda (positional rule would
+        // otherwise pick index 1).
+        assert_eq!(TonePlacement::find_tone_target("ôa"), Some(0)); // ô first
+        assert_eq!(TonePlacement::find_tone_target("ơa"), Some(0)); // ơ first
+        assert_eq!(TonePlacement::find_tone_target("âu"), Some(0)); // â first
+        assert_eq!(TonePlacement::find_tone_target("ău"), Some(0)); // ă first
+        assert_eq!(TonePlacement::find_tone_target("êu"), Some(0)); // ê first
+    }
+
+    #[test]
+    fn three_vowel_clusters_resolve_to_middle_or_priority() {
+        // "oai": no priority vowel, three vowels -> middle (index 1).
+        assert_eq!(TonePlacement::find_tone_target("oai"), Some(1));
+        // "uôi": ô (index 1) is the priority vowel (also the middle here).
+        assert_eq!(TonePlacement::find_tone_target("uôi"), Some(1));
+        // "ươi": ơ (index 1) is the priority vowel.
+        assert_eq!(TonePlacement::find_tone_target("ươi"), Some(1));
+    }
+
+    #[test]
+    fn single_and_no_vowel_edge_cases() {
+        // Single vowel always takes the tone, regardless of mark/coda.
+        assert_eq!(TonePlacement::find_tone_target("a"), Some(0));
+        assert_eq!(TonePlacement::find_tone_target("ư"), Some(0));
+        assert_eq!(TonePlacement::find_tone_target("y"), Some(0));
+        // No vowel -> None.
+        assert_eq!(TonePlacement::find_tone_target("ng"), None);
+        assert_eq!(TonePlacement::find_tone_target(""), None);
+    }
+
+    // ======================================================================
+    // Task 2.2 — Property test for tone placement
+    // ======================================================================
+    // Feature: vietnamese-input-support, Property 4: Tone Placement Correctness
+
+    use super::super::syllable::VowelUnit;
+
+    /// Independent reference implementation of the tone-placement rules.
+    ///
+    /// This intentionally derives the target a different way from
+    /// [`TonePlacement::find_tone_target`]: it works in terms of an *offset*
+    /// within the decomposed nucleus and classifies priority vowels via their
+    /// [`VowelUnit`] mark (any modification mark except the horn on `u`),
+    /// rather than matching glyph categories directly. If the two ever
+    /// disagree, the property test fails.
+    fn reference_tone_target(syllable: &str) -> Option<usize> {
+        let chars: Vec<char> = syllable.chars().collect();
+        let first = chars.iter().position(|&c| is_vietnamese_vowel(c))?;
+
+        // Collect the contiguous nucleus glyphs and note whether a coda follows.
+        let mut nucleus: Vec<char> = Vec::new();
+        let mut j = first;
+        while j < chars.len() && is_vietnamese_vowel(chars[j]) {
+            nucleus.push(chars[j]);
+            j += 1;
+        }
+        let has_coda = j < chars.len();
+
+        let units: Vec<VowelUnit> = nucleus
+            .iter()
+            .map(|&c| VowelUnit::from_char(c).expect("nucleus char is a vowel"))
+            .collect();
+
+        // A priority vowel is any marked vowel other than the horned `u` (ư).
+        // That set is exactly {ô, ơ, â, ă, ê}.
+        let priority = |u: &VowelUnit| -> bool {
+            match (u.base, u.mark) {
+                (_, None) => false,
+                ('u', Some(VowelMark::Horn)) => false,
+                (_, Some(_)) => true,
+            }
+        };
+
+        let offset = if let Some(p) = units.iter().position(priority) {
+            p
+        } else {
+            match units.len() {
+                1 => 0,
+                2 => {
+                    if has_coda {
+                        0
+                    } else {
+                        1
+                    }
+                }
+                _ => units.len() / 2,
+            }
+        };
+
+        Some(first + offset)
+    }
+
+    #[test]
+    fn property_tone_placement_correctness() {
+        // Consonant-only onsets and codas (no vowels) so the generated
+        // nucleus is exactly the vowel run we splice in.
+        const ONSETS: &[&str] = &[
+            "", "b", "c", "d", "g", "h", "kh", "l", "m", "n", "ng", "nh", "ph", "t", "th", "tr",
+            "v", "x",
+        ];
+        const VOWELS: &[char] = &[
+            'a', 'ă', 'â', 'e', 'ê', 'i', 'o', 'ô', 'ơ', 'u', 'ư', 'y',
+        ];
+        const CODAS: &[&str] = &["", "c", "ch", "m", "n", "ng", "nh", "p", "t"];
+
+        // Deterministic inline LCG PRNG (no external crates).
+        let mut seed: u64 = 0xC0FFEE;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            // Use the high bits, which have the best statistical quality.
+            seed >> 33
+        };
+
+        const CASES: usize = 250;
+        for _ in 0..CASES {
+            let onset = ONSETS[(next() as usize) % ONSETS.len()];
+            let n_vowels = 1 + (next() as usize) % 3; // 1..=3 vowels
+            let mut nucleus = String::new();
+            for _ in 0..n_vowels {
+                nucleus.push(VOWELS[(next() as usize) % VOWELS.len()]);
+            }
+            let coda = CODAS[(next() as usize) % CODAS.len()];
+
+            let syllable = format!("{onset}{nucleus}{coda}");
+
+            let expected = reference_tone_target(&syllable);
+            let actual = TonePlacement::find_tone_target(&syllable);
+            assert_eq!(
+                actual, expected,
+                "tone placement mismatch for syllable {syllable:?} \
+                 (onset={onset:?}, nucleus={nucleus:?}, coda={coda:?})"
+            );
+        }
+    }
 }

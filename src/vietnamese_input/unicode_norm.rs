@@ -173,4 +173,110 @@ mod tests {
         assert_eq!(nfc.normalize("hello"), "hello");
         assert_eq!(nfd.normalize("hello"), "hello");
     }
+
+    /// Table of (most) precomposed Vietnamese letters: the base vowels with
+    /// every vowel-mark (circumflex/breve/horn) and tone-mark (sắc/huyền/hỏi/
+    /// ngã/nặng) combination, plus the consonant đ. Each entry is a single
+    /// precomposed (NFC) codepoint.
+    const VIETNAMESE_PRECOMPOSED: &[char] = &[
+        // a + tones
+        'a', 'á', 'à', 'ả', 'ã', 'ạ',
+        // ă (breve) + tones
+        'ă', 'ắ', 'ằ', 'ẳ', 'ẵ', 'ặ',
+        // â (circumflex) + tones
+        'â', 'ấ', 'ầ', 'ẩ', 'ẫ', 'ậ',
+        // e + tones
+        'e', 'é', 'è', 'ẻ', 'ẽ', 'ẹ',
+        // ê (circumflex) + tones
+        'ê', 'ế', 'ề', 'ể', 'ễ', 'ệ',
+        // i + tones
+        'i', 'í', 'ì', 'ỉ', 'ĩ', 'ị',
+        // o + tones
+        'o', 'ó', 'ò', 'ỏ', 'õ', 'ọ',
+        // ô (circumflex) + tones
+        'ô', 'ố', 'ồ', 'ổ', 'ỗ', 'ộ',
+        // ơ (horn) + tones
+        'ơ', 'ớ', 'ờ', 'ở', 'ỡ', 'ợ',
+        // u + tones
+        'u', 'ú', 'ù', 'ủ', 'ũ', 'ụ',
+        // ư (horn) + tones
+        'ư', 'ứ', 'ừ', 'ử', 'ữ', 'ự',
+        // y + tones
+        'y', 'ý', 'ỳ', 'ỷ', 'ỹ', 'ỵ',
+        // đ
+        'đ',
+        // a few uppercase variants for breadth
+        'Ậ', 'Ế', 'Ộ', 'Ợ', 'Ự', 'Đ',
+    ];
+
+    // Feature: vietnamese-input-support, Property 9: Unicode Normalization Preservation
+    //
+    // **Validates: Requirements 5.1, 5.3, 5.4**
+    //
+    // For any composed Vietnamese character:
+    //   * NFC normalization of both the precomposed form and an NFD-decomposed
+    //     form produce the same NFC string (canonical equivalence between forms).
+    //   * NFC(NFD(x)) == NFC(x) (round-trip / canonical-order preservation).
+    //   * NFC is idempotent on the already-precomposed glyph, and the NFC result
+    //     matches the reference `unicode-normalization` nfc iterator (same
+    //     rendered glyph, canonical order).
+    #[test]
+    fn nfc_normalization_preserves_canonical_equivalence_for_vietnamese() {
+        let nfc = UnicodeNormalizer::with_form(NormalizationForm::Nfc);
+        let nfd = UnicodeNormalizer::with_form(NormalizationForm::Nfd);
+
+        for &ch in VIETNAMESE_PRECOMPOSED {
+            let precomposed: String = ch.to_string();
+
+            // The fully decomposed (NFD) representation of the same character.
+            let decomposed = nfd.normalize(&precomposed);
+
+            // Reference NFC form straight from the crate's nfc iterator.
+            let reference_nfc: String = precomposed.nfc().collect();
+
+            // 5.1 / idempotence: NFC of an already-composed glyph is itself and
+            // matches the reference normalization.
+            let nfc_precomposed = nfc.normalize(&precomposed);
+            assert_eq!(
+                nfc_precomposed, reference_nfc,
+                "NFC of precomposed {:?} must match the canonical NFC form",
+                ch
+            );
+
+            // 5.4: both representations are canonically equivalent — NFC of the
+            // decomposed form yields the same string as NFC of the precomposed
+            // form (same rendered glyph, same semantic meaning).
+            let nfc_decomposed = nfc.normalize(&decomposed);
+            assert_eq!(
+                nfc_decomposed, nfc_precomposed,
+                "NFC of decomposed and precomposed {:?} must be canonically equivalent",
+                ch
+            );
+
+            // 5.3: NFC then NFD then NFC round-trips back to the same NFC form,
+            // confirming combining marks are emitted in canonical order.
+            let round_trip = nfc.normalize(&nfd.normalize(&nfc_precomposed));
+            assert_eq!(
+                round_trip, nfc_precomposed,
+                "NFC(NFD(NFC(x))) must equal NFC(x) for {:?}",
+                ch
+            );
+
+            // The canonical NFC form of a single Vietnamese letter is a single
+            // codepoint, while its NFD form decomposes into base + marks. The
+            // decomposed form must therefore have at least as many codepoints,
+            // and re-composing it must restore the original glyph.
+            assert!(
+                decomposed.chars().count() >= precomposed.chars().count(),
+                "NFD of {:?} should not be shorter than its precomposed form",
+                ch
+            );
+            assert_eq!(
+                nfc.normalize(&decomposed),
+                precomposed,
+                "Re-composing the NFD form of {:?} must restore the precomposed glyph",
+                ch
+            );
+        }
+    }
 }

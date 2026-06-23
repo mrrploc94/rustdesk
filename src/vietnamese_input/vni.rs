@@ -594,4 +594,223 @@ mod tests {
         // The terminator did not alter the composed text.
         assert_eq!(buffer.current_text(), "á");
     }
+
+    // =====================================================================
+    // Independent VNI reference model (used by the property tests below).
+    //
+    // This table is deliberately *independent* of the engine's internal
+    // `COMPOSE_TABLE`: it is hand-authored from the standard VNI specification
+    // so that the property tests check the engine against an external oracle
+    // rather than against its own data.
+    //
+    // Each row is `(base_vowel, vowel_mark_digit, [glyphs])` where the glyph
+    // array is indexed by tone digit in the order produced by VNI number keys:
+    //   index 0 = no tone, 1 = sắc(1), 2 = huyền(2), 3 = hỏi(3),
+    //   4 = ngã(4), 5 = nặng(5).
+    // `vowel_mark_digit` is `None` for a bare vowel, or `Some(d)` where `d` is
+    // the VNI digit ('6', '7', or '8') that produces this marked vowel.
+    // =====================================================================
+    const VNI_REFERENCE: &[(char, Option<char>, [char; 6])] = &[
+        ('a', None, ['a', 'á', 'à', 'ả', 'ã', 'ạ']),
+        ('a', Some('6'), ['â', 'ấ', 'ầ', 'ẩ', 'ẫ', 'ậ']),
+        ('a', Some('8'), ['ă', 'ắ', 'ằ', 'ẳ', 'ẵ', 'ặ']),
+        ('e', None, ['e', 'é', 'è', 'ẻ', 'ẽ', 'ẹ']),
+        ('e', Some('6'), ['ê', 'ế', 'ề', 'ể', 'ễ', 'ệ']),
+        ('i', None, ['i', 'í', 'ì', 'ỉ', 'ĩ', 'ị']),
+        ('o', None, ['o', 'ó', 'ò', 'ỏ', 'õ', 'ọ']),
+        ('o', Some('6'), ['ô', 'ố', 'ồ', 'ổ', 'ỗ', 'ộ']),
+        ('o', Some('7'), ['ơ', 'ớ', 'ờ', 'ở', 'ỡ', 'ợ']),
+        ('u', None, ['u', 'ú', 'ù', 'ủ', 'ũ', 'ụ']),
+        // Key 6 and key 7 both resolve to a horn (ư) after 'u'.
+        ('u', Some('6'), ['ư', 'ứ', 'ừ', 'ử', 'ữ', 'ự']),
+        ('u', Some('7'), ['ư', 'ứ', 'ừ', 'ử', 'ữ', 'ự']),
+        ('y', None, ['y', 'ý', 'ỳ', 'ỷ', 'ỹ', 'ỵ']),
+    ];
+
+    /// Look up the expected composed glyph for a `(base, mark_digit, tone_digit)`
+    /// triple in the independent reference table. Returns `None` if the
+    /// combination is not a valid VNI vowel composition.
+    fn vni_expected_glyph(base: char, mark_digit: Option<char>, tone_digit: Option<char>) -> Option<char> {
+        let tone_idx = match tone_digit {
+            None => 0usize,
+            Some('1') => 1,
+            Some('2') => 2,
+            Some('3') => 3,
+            Some('4') => 4,
+            Some('5') => 5,
+            _ => return None,
+        };
+        VNI_REFERENCE
+            .iter()
+            .find(|(b, m, _)| *b == base && *m == mark_digit)
+            .map(|(_, _, glyphs)| glyphs[tone_idx])
+    }
+
+    /// A tiny deterministic linear-congruential PRNG so the property tests are
+    /// reproducible and require no external crates. Constants are the well-known
+    /// values used by Knuth's MMIX LCG.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn new(seed: u64) -> Self {
+            Lcg(seed)
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            // Return the high bits, which have the best statistical quality.
+            self.0
+        }
+
+        /// Uniformly pick an index in `0..n`.
+        fn below(&mut self, n: usize) -> usize {
+            (self.next_u64() >> 33) as usize % n
+        }
+    }
+
+    // =====================================================================
+    // Property 2: VNI Composition Correctness
+    // Feature: vietnamese-input-support, Property 2: VNI Composition Correctness
+    //
+    // For any valid VNI input sequence (a base vowel, an optional vowel-mark
+    // digit valid for that vowel, and an optional tone digit), the engine's
+    // composed output matches the independent standard-VNI reference lookup.
+    //
+    // **Validates: Requirements 2.1, 2.2, 2.9**
+    // =====================================================================
+    #[test]
+    fn property_vni_composition_matches_reference() {
+        // Valid `(base, mark_digit)` combinations to draw from. `None` means a
+        // bare vowel with no vowel-mark digit.
+        let valid_marks: &[(char, Option<char>)] = &[
+            ('a', None),
+            ('a', Some('6')),
+            ('a', Some('8')),
+            ('e', None),
+            ('e', Some('6')),
+            ('i', None),
+            ('o', None),
+            ('o', Some('6')),
+            ('o', Some('7')),
+            ('u', None),
+            ('u', Some('6')),
+            ('u', Some('7')),
+            ('y', None),
+        ];
+        let tone_digits: &[Option<char>] = &[None, Some('1'), Some('2'), Some('3'), Some('4'), Some('5')];
+
+        let mut rng = Lcg::new(0x5341_4D50_4C45_0002);
+        let cases = 400;
+        for _ in 0..cases {
+            let (base, mark_digit) = valid_marks[rng.below(valid_marks.len())];
+            let tone_digit = tone_digits[rng.below(tone_digits.len())];
+
+            // Build the VNI keystroke sequence: base, then vowel-mark digit,
+            // then tone digit (the order the engine expects).
+            let mut seq = String::new();
+            seq.push(base);
+            if let Some(m) = mark_digit {
+                seq.push(m);
+            }
+            if let Some(t) = tone_digit {
+                seq.push(t);
+            }
+
+            let expected = vni_expected_glyph(base, mark_digit, tone_digit)
+                .expect("reference table must define every generated valid combination")
+                .to_string();
+
+            assert_eq!(
+                compose(&seq),
+                expected,
+                "VNI sequence {seq:?} (base={base}, mark={mark_digit:?}, tone={tone_digit:?}) \
+                 should compose to {expected:?}"
+            );
+        }
+    }
+
+    // =====================================================================
+    // Property 13: VNI Ambiguity Resolution
+    // Feature: vietnamese-input-support, Property 13: VNI Ambiguity Resolution
+    //
+    // For any base vowel followed by key 6 or 7, the engine resolves the
+    // vowel-mark ambiguity deterministically from the preceding base vowel:
+    //   key 7 after 'o' → ơ, key 6 after 'o' → ô,
+    //   key 6/7 after 'u' → ư,
+    //   key 6 after 'a' → â,
+    //   key 6 after 'e' → ê.
+    //
+    // **Validates: Requirements 2.7**
+    // =====================================================================
+    #[test]
+    fn property_vni_ambiguity_resolution_is_deterministic() {
+        // Every valid `(base, key)` ambiguity pair and its single correct glyph.
+        let ambiguity_pairs: &[(char, char, char)] = &[
+            ('o', '7', 'ơ'),
+            ('o', '6', 'ô'),
+            ('u', '6', 'ư'),
+            ('u', '7', 'ư'),
+            ('a', '6', 'â'),
+            ('e', '6', 'ê'),
+        ];
+
+        let mut rng = Lcg::new(0x5341_4D50_4C45_0013);
+        let cases = 300;
+        for _ in 0..cases {
+            let (base, key, expected) = ambiguity_pairs[rng.below(ambiguity_pairs.len())];
+            let seq = format!("{base}{key}");
+            // Resolution must be deterministic: the same pair always yields the
+            // same glyph regardless of when it is produced.
+            assert_eq!(
+                compose(&seq),
+                expected.to_string(),
+                "VNI ambiguity: key {key} after {base:?} must resolve to {expected:?}"
+            );
+            // And it must be idempotent across repeated invocations.
+            assert_eq!(compose(&seq), expected.to_string());
+        }
+    }
+
+    // --- Additional unit tests for VNI number mappings (Task 4.4) ----------
+
+    #[test]
+    fn vni_all_tone_digits_on_o_base() {
+        // Full tone set on a bare 'o' base: 1..5.
+        assert_eq!(compose("o1"), "ó");
+        assert_eq!(compose("o2"), "ò");
+        assert_eq!(compose("o3"), "ỏ");
+        assert_eq!(compose("o4"), "õ");
+        assert_eq!(compose("o5"), "ọ");
+    }
+
+    #[test]
+    fn vni_e6_circumflex_mapping() {
+        // e + 6 → ê (not previously asserted on its own).
+        assert_eq!(compose("e6"), "ê");
+    }
+
+    #[test]
+    fn vni_vowel_mark_digit_distinctions() {
+        // After 'o', key 6 and key 7 are DIFFERENT marks (ô vs ơ)...
+        assert_ne!(compose("o6"), compose("o7"));
+        assert_eq!(compose("o6"), "ô");
+        assert_eq!(compose("o7"), "ơ");
+        // ...but after 'u', key 6 and key 7 collapse to the same horn (ư).
+        assert_eq!(compose("u6"), compose("u7"));
+        assert_eq!(compose("u6"), "ư");
+        // After 'a', key 6 (â) and key 8 (ă) are distinct.
+        assert_ne!(compose("a6"), compose("a8"));
+        assert_eq!(compose("a6"), "â");
+        assert_eq!(compose("a8"), "ă");
+    }
+
+    #[test]
+    fn vni_d9_consonant_mark_uppercase_and_lower() {
+        // d + 9 → đ, and the uppercase variant D + 9 → Đ.
+        assert_eq!(compose("d9"), "đ");
+        assert_eq!(compose("D9"), "Đ");
+    }
 }

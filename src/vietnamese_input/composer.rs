@@ -1721,4 +1721,484 @@ mod tests {
             "sessions should be listed in sorted id order, got: {dump}"
         );
     }
+
+    // =====================================================================
+    // Property-based tests (deterministic inline PRNG — no external deps)
+    // =====================================================================
+    //
+    // These tests do NOT use `proptest`/`quickcheck` (adding a dependency would
+    // require updating Cargo.lock, which breaks the `--locked` CI build).
+    // Instead each test drives a small inline linear-congruential PRNG over
+    // >=100 generated cases and checks the composer against an INDEPENDENT
+    // reference oracle authored directly from the specification (rather than
+    // re-deriving expectations from the implementation under test).
+
+    /// Deterministic linear-congruential PRNG (Numerical Recipes constants).
+    ///
+    /// Reproducible across runs from a fixed seed, so any counterexample is
+    /// stable and debuggable without an external shrinking framework.
+    struct PropRng {
+        state: u64,
+    }
+
+    impl PropRng {
+        fn new(seed: u64) -> Self {
+            Self { state: seed }
+        }
+
+        /// Advance the state and return a value in `[0, bound)`.
+        /// `bound` must be greater than zero.
+        fn next(&mut self, bound: usize) -> usize {
+            self.state = self
+                .state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            // The high bits have the best statistical quality.
+            ((self.state >> 33) as usize) % bound
+        }
+
+        /// Pick a reference to a pseudo-random element of `items`.
+        fn choose<'a, T>(&mut self, items: &'a [T]) -> &'a T {
+            &items[self.next(items.len())]
+        }
+    }
+
+    // --- Property 5: Backspace LIFO Reversal (task 8.3) ------------------
+    // Feature: vietnamese-input-support, Property 5: Backspace LIFO Reversal
+    //
+    // For any sequence of N composition transformations applied to a buffer,
+    // pressing backspace N times reverses each transformation in
+    // last-applied-first-removed (LIFO) order, reproducing the exact
+    // intermediate composition states in reverse sequence.
+    //
+    // **Validates: Requirements 1.7, 2.8, 10.1, 10.2, 10.3, 10.4, 10.5, 10.9**
+    #[test]
+    fn property_backspace_lifo_reversal() {
+        // Telex keystrokes that all stay in-flight (each is Consumed and records
+        // exactly one reversible history step): base vowels/consonants plus the
+        // tone (s/f/r/x/j) and vowel-mark (w) modifiers.
+        let alphabet = [
+            'a', 'e', 'i', 'o', 'u', 'd', 'n', 'g', 'h', 't', 'm', 'c', 'b', 'l',
+            'p', 'v', 's', 'f', 'r', 'x', 'j', 'w',
+        ];
+        let mut rng = PropRng::new(0x0BAD_C0DE_1234_5678);
+
+        for _ in 0..200 {
+            let mut composer = VietnameseComposer::with_method(InputMethod::Telex);
+            let sid = session();
+
+            // Capture the buffer state after each Consumed keystroke. Cap the
+            // number of transformations at the per-character history limit so
+            // every applied step remains individually reversible (the buffer
+            // history retains at most MAX_HISTORY_STEPS = 10 entries).
+            let target = rng.next(8) + 1; // 1..=8 transformations
+            let mut forward: Vec<String> = Vec::new();
+            let mut guard = 0;
+            while forward.len() < target && guard < 200 {
+                guard += 1;
+                let ch = *rng.choose(&alphabet);
+                match composer.process_key(&sid, ch) {
+                    ComposerResult::Consumed => {
+                        if let Some(state) = composer.get_buffer_content(&sid) {
+                            forward.push(state.to_string());
+                        }
+                    }
+                    // An (unexpected) commit/flush would reset the buffer; drop
+                    // the partial capture and rebuild a contiguous composition.
+                    _ => forward.clear(),
+                }
+            }
+
+            if forward.is_empty() {
+                continue; // degenerate; nothing was buffered.
+            }
+
+            // Independent oracle: backspacing walks back through exactly the
+            // forward states in reverse, discarding the final (current) state
+            // first (one backspace removes the most recent transformation).
+            let expected: Vec<String> = forward.iter().rev().skip(1).cloned().collect();
+
+            let mut reversed: Vec<String> = Vec::new();
+            while composer.get_buffer_content(&sid).is_some() {
+                assert_eq!(
+                    composer.handle_backspace(&sid),
+                    ComposerResult::Consumed,
+                    "backspace on an in-flight composition must be Consumed (forward: {forward:?})"
+                );
+                if let Some(state) = composer.get_buffer_content(&sid) {
+                    reversed.push(state.to_string());
+                }
+            }
+
+            assert_eq!(
+                reversed, expected,
+                "backspace must reproduce intermediate states in reverse order (forward: {forward:?})"
+            );
+
+            // The buffer is fully emptied; a further backspace passes a raw
+            // backspace through to the remote session.
+            match composer.handle_backspace(&sid) {
+                ComposerResult::PassThrough(ev) => assert_eq!(ev.seq(), "\u{0008}"),
+                other => panic!("expected PassThrough backspace once empty, got {other:?}"),
+            }
+        }
+    }
+
+    // --- Property 6: Commit Trigger Flush (task 8.4) --------------------
+    // Feature: vietnamese-input-support, Property 6: Commit Trigger Flush
+    //
+    // For any non-empty composition buffer and any commit trigger character
+    // (space or punctuation), the composer emits the composed Unicode text
+    // followed by the trigger character, and the buffer is empty afterward.
+    //
+    // **Validates: Requirements 1.8, 2.5, 7.3, 7.4**
+    #[test]
+    fn property_commit_trigger_flush() {
+        // INDEPENDENT reference table: Telex keystroke fragment → the composed
+        // Vietnamese text the standard Telex specification prescribes. Authored
+        // directly from the spec, not derived from the engine.
+        let fragments: &[(&str, &str)] = &[
+            ("a", "a"),
+            ("as", "á"),
+            ("af", "à"),
+            ("ar", "ả"),
+            ("ax", "ã"),
+            ("aj", "ạ"),
+            ("dd", "đ"),
+            ("ow", "ơ"),
+            ("uw", "ư"),
+            ("ee", "ê"),
+            ("oo", "ô"),
+            ("aa", "â"),
+            ("aw", "ă"),
+            ("uow", "ươ"),
+            ("uowj", "ượ"),
+            ("dduowjc", "được"),
+            ("Vieejt", "Việt"),
+            ("nguowif", "người"),
+            ("tieesng", "tiếng"),
+            ("vi", "vi"),
+            ("oas", "oá"),
+        ];
+        // Commit triggers: space and a spread of punctuation (all non-alphabetic,
+        // so the Telex engine treats each as a CommitAndPass trigger).
+        let triggers = [
+            ' ', '.', ',', ';', ':', '!', '?', ')', '(', '"', '\'', '-',
+        ];
+        let mut rng = PropRng::new(0x600D_5EED_0000_0006);
+
+        for _ in 0..300 {
+            let (frag, composed) = *rng.choose(fragments);
+            let trigger = *rng.choose(&triggers);
+
+            let mut composer = VietnameseComposer::with_method(InputMethod::Telex);
+            let sid = session();
+
+            feed(&mut composer, &sid, frag);
+            assert!(
+                composer.get_buffer_content(&sid).is_some(),
+                "buffer must be non-empty before the commit trigger (fragment {frag:?})"
+            );
+
+            // Oracle: output is the composed text with the raw trigger appended.
+            let expected = format!("{composed}{trigger}");
+            match composer.process_key(&sid, trigger) {
+                ComposerResult::Compose(text) => assert_eq!(
+                    text, expected,
+                    "fragment {frag:?} + trigger {trigger:?} should emit {expected:?}"
+                ),
+                other => panic!(
+                    "fragment {frag:?} + trigger {trigger:?}: expected Compose, got {other:?}"
+                ),
+            }
+
+            // The buffer is empty (and dropped) after the commit.
+            assert!(
+                composer.get_buffer_content(&sid).is_none(),
+                "buffer must be empty after a commit trigger (fragment {frag:?})"
+            );
+            assert!(!composer.has_session(&sid));
+        }
+    }
+
+    // --- Property 8: Non-Vietnamese Pass-Through (task 8.5) -------------
+    // Feature: vietnamese-input-support, Property 8: Non-Vietnamese Pass-Through
+    //
+    // For any keystroke that is not part of a valid Vietnamese composition
+    // sequence — every keystroke when the method is Off, and any non-composable
+    // keystroke against an empty buffer in a composing method — the composer
+    // outputs the raw keystroke unchanged (a PassThrough carrying the original
+    // character in its `seq`).
+    //
+    // **Validates: Requirements 1.6, 4.4, 7.1**
+    #[test]
+    fn property_non_vietnamese_pass_through() {
+        // A pool of arbitrary characters: ASCII letters/digits, punctuation,
+        // whitespace, and a few non-ASCII scalars.
+        let chars = [
+            'a', 'z', 'Q', 'M', '5', '0', '9', '.', ',', '!', '?', ';', ':',
+            '-', '_', '@', '#', '$', '%', '&', '*', '(', ')', '/', '\\', '+',
+            '=', '[', ']', '€', 'ß', 'ñ', ' ',
+        ];
+        let mut rng = PropRng::new(0x9A55_7470_0000_0008);
+
+        for _ in 0..300 {
+            let ch = *rng.choose(&chars);
+
+            // Scenario A: composition Off — every keystroke passes through
+            // unchanged, and no session buffer is ever created.
+            {
+                let mut composer = VietnameseComposer::new(); // Off by default
+                let sid = session();
+                match composer.process_key(&sid, ch) {
+                    ComposerResult::PassThrough(ev) => assert_eq!(
+                        ev.seq(),
+                        ch.to_string(),
+                        "Off mode must pass {ch:?} through unchanged"
+                    ),
+                    other => panic!("Off mode: expected PassThrough for {ch:?}, got {other:?}"),
+                }
+                assert!(!composer.has_session(&sid), "Off mode must not create a buffer");
+            }
+
+            // Scenario B: composing method (Telex) with an empty buffer — a
+            // non-composable (non-alphabetic) keystroke is not Vietnamese input
+            // and passes through unchanged.
+            if !ch.is_ascii_alphabetic() {
+                let mut composer = VietnameseComposer::with_method(InputMethod::Telex);
+                let sid = session();
+                match composer.process_key(&sid, ch) {
+                    ComposerResult::PassThrough(ev) => assert_eq!(
+                        ev.seq(),
+                        ch.to_string(),
+                        "empty-buffer non-composable {ch:?} must pass through unchanged"
+                    ),
+                    other => panic!(
+                        "Telex empty buffer: expected PassThrough for {ch:?}, got {other:?}"
+                    ),
+                }
+            }
+        }
+    }
+
+    // --- Property 15: Buffer Overflow Flush (task 8.6) ------------------
+    // Feature: vietnamese-input-support, Property 15: Buffer Overflow Flush
+    //
+    // IMPLEMENTED BEHAVIOR (documented per the task note): the composer commits
+    // the in-flight composition on every commit trigger (space / punctuation),
+    // which flushes the completed characters to the remote and empties the
+    // per-session buffer. There is therefore no unbounded growth: for realistic
+    // multi-word input the live buffer stays well under the nominal capacity
+    // (DEFAULT_CAPACITY = 20 characters), and no completed characters are lost.
+    // This property asserts exactly that — for long multi-word input spanning
+    // far more than 20 characters in total, every completed word is flushed in
+    // order (no data loss) and the live buffer never exceeds the capacity.
+    //
+    // **Validates: Requirements 6.7**
+    #[test]
+    fn property_buffer_overflow_flush() {
+        // Nominal per-session buffer capacity (mirrors buffer::DEFAULT_CAPACITY).
+        let capacity = super::super::buffer::DEFAULT_CAPACITY;
+
+        // INDEPENDENT reference: Telex fragment → composed Vietnamese word.
+        let words: &[(&str, &str)] = &[
+            ("as", "á"),
+            ("af", "à"),
+            ("dd", "đ"),
+            ("ow", "ơ"),
+            ("uw", "ư"),
+            ("ee", "ê"),
+            ("oo", "ô"),
+            ("aa", "â"),
+            ("dduowjc", "được"),
+            ("Vieejt", "Việt"),
+            ("nguowif", "người"),
+            ("tieesng", "tiếng"),
+            ("vi", "vi"),
+            ("oas", "oá"),
+        ];
+        let mut rng = PropRng::new(0x0F10_0DED_0000_0015);
+
+        for _ in 0..120 {
+            let mut composer = VietnameseComposer::with_method(InputMethod::Telex);
+            let sid = session();
+
+            // Build a long multi-word input far exceeding the 20-char buffer
+            // capacity in aggregate, each word committed by a space.
+            let word_count = rng.next(20) + 15; // 15..=34 words
+            let mut chosen: Vec<(&str, &str)> = Vec::with_capacity(word_count);
+            for _ in 0..word_count {
+                chosen.push(*rng.choose(words));
+            }
+
+            // Oracle: the emitted text is each word's composed glyph followed by
+            // the committing space, in order — no data is lost.
+            let expected: Vec<String> =
+                chosen.iter().map(|(_, c)| format!("{c} ")).collect();
+
+            let mut emitted: Vec<String> = Vec::new();
+            let mut max_buffer_len = 0usize;
+
+            for (frag, _) in &chosen {
+                for ch in frag.chars() {
+                    match composer.process_key(&sid, ch) {
+                        ComposerResult::Consumed => {}
+                        other => panic!("composing {frag:?} produced unexpected {other:?}"),
+                    }
+                    if let Some(buf) = composer.get_buffer_content(&sid) {
+                        max_buffer_len = max_buffer_len.max(buf.chars().count());
+                    }
+                }
+                // Commit the word with a space.
+                match composer.process_key(&sid, ' ') {
+                    ComposerResult::Compose(text) => emitted.push(text),
+                    other => panic!("space after {frag:?} should commit, got {other:?}"),
+                }
+                // After each commit the completed characters are flushed and the
+                // buffer is empty.
+                assert!(
+                    composer.get_buffer_content(&sid).is_none(),
+                    "buffer must be empty after a commit trigger"
+                );
+            }
+
+            // No data loss: every composed word was emitted in order.
+            assert_eq!(emitted, expected, "all completed words must be flushed in order");
+            // The live buffer stayed bounded by the nominal capacity throughout.
+            assert!(
+                max_buffer_len <= capacity,
+                "live buffer ({max_buffer_len}) must stay within capacity {capacity}"
+            );
+            // No buffer lingers after the final commit.
+            assert!(!composer.has_session(&sid));
+        }
+    }
+
+    // --- Property 7: Multi-Session Isolation (task 9.2) -----------------
+    // Feature: vietnamese-input-support, Property 7: Multi-Session Isolation
+    //
+    // For any set of active sessions whose keystrokes are interleaved, each
+    // session's composition is fully independent: the committed output of a
+    // session in the interleaved run equals the output it would produce if its
+    // keystrokes were processed alone. No state leaks between buffers.
+    //
+    // **Validates: Requirements 6.1, 6.4, 11.1, 11.2, 11.3**
+    #[test]
+    fn property_multi_session_isolation() {
+        let words: &[&str] = &[
+            "as", "af", "dd", "ow", "uw", "ee", "oo", "aa", "dduowjc", "Vieejt",
+            "nguowif", "tieesng", "vi", "ng", "oas", "aw", "uow", "uowj",
+        ];
+        let mut rng = PropRng::new(0x1501_A7ED_0000_0007);
+
+        for _ in 0..150 {
+            let session_count = rng.next(6) + 3; // 3..=8 concurrent sessions
+            let mut sids: Vec<SessionID> = Vec::with_capacity(session_count);
+            let mut seqs: Vec<Vec<char>> = Vec::with_capacity(session_count);
+            for i in 0..session_count {
+                sids.push(format!("iso-session-{i}"));
+                seqs.push(rng.choose(words).chars().collect());
+            }
+
+            // Independent oracle: compose each session's word ALONE in its own
+            // composer, with no interleaving.
+            let mut expected: Vec<String> = Vec::with_capacity(session_count);
+            for seq in &seqs {
+                let mut solo = VietnameseComposer::with_method(InputMethod::Telex);
+                let solo_sid = "solo".to_string();
+                for &ch in seq {
+                    assert_eq!(
+                        solo.process_key(&solo_sid, ch),
+                        ComposerResult::Consumed
+                    );
+                }
+                match solo.process_key(&solo_sid, ' ') {
+                    ComposerResult::Compose(text) => expected.push(text),
+                    other => panic!("solo composition failed: {other:?}"),
+                }
+            }
+
+            // Interleaved run: feed one keystroke per session per round.
+            let mut composer = VietnameseComposer::with_method(InputMethod::Telex);
+            let max_len = seqs.iter().map(|s| s.len()).max().unwrap_or(0);
+            for idx in 0..max_len {
+                for (s, seq) in sids.iter().zip(&seqs) {
+                    if let Some(&ch) = seq.get(idx) {
+                        assert_eq!(
+                            composer.process_key(s, ch),
+                            ComposerResult::Consumed,
+                            "interleaved keystroke must be Consumed"
+                        );
+                    }
+                }
+            }
+            assert_eq!(
+                composer.session_count(),
+                session_count,
+                "every session must hold its own live buffer"
+            );
+
+            // Commit each session; its output must equal the isolated oracle —
+            // proving no keystrokes bled between the interleaved buffers.
+            for (i, s) in sids.iter().enumerate() {
+                match composer.process_key(s, ' ') {
+                    ComposerResult::Compose(text) => assert_eq!(
+                        text, expected[i],
+                        "session {s} leaked state: got {text:?}, expected {:?}",
+                        expected[i]
+                    ),
+                    other => panic!("session {s}: expected Compose, got {other:?}"),
+                }
+                assert!(composer.get_buffer_content(s).is_none());
+            }
+        }
+    }
+
+    // --- Property 12: Input Method Cycling Order (task 10.2) ------------
+    // Feature: vietnamese-input-support, Property 12: Input Method Cycling Order
+    //
+    // For any starting input method, pressing the cycle shortcut advances to the
+    // next method in the fixed, deterministic order
+    // Telex → VNI → VNI Windows → Off → Telex, wrapping around.
+    //
+    // **Validates: Requirements 4.8**
+    #[test]
+    fn property_input_method_cycling_order() {
+        // Independent oracle for the fixed cycle order.
+        fn next_method(m: InputMethod) -> InputMethod {
+            match m {
+                InputMethod::Telex => InputMethod::Vni,
+                InputMethod::Vni => InputMethod::VniWindows,
+                InputMethod::VniWindows => InputMethod::Off,
+                InputMethod::Off => InputMethod::Telex,
+            }
+        }
+
+        let starts = [
+            InputMethod::Telex,
+            InputMethod::Vni,
+            InputMethod::VniWindows,
+            InputMethod::Off,
+        ];
+        let mut rng = PropRng::new(0xCAFE_1234_0000_0012);
+
+        for _ in 0..200 {
+            let start = *rng.choose(&starts);
+            let mut composer = VietnameseComposer::with_method(start);
+            assert_eq!(composer.active_method(), start);
+
+            let presses = rng.next(20) + 1; // 1..=20 cycle presses
+            let mut oracle = start;
+            for step in 0..presses {
+                oracle = next_method(oracle);
+                let actual = composer.cycle_method();
+                assert_eq!(
+                    actual, oracle,
+                    "press {} from start {start:?}: expected {oracle:?}, got {actual:?}",
+                    step + 1
+                );
+                assert_eq!(composer.active_method(), oracle);
+            }
+        }
+    }
 }
