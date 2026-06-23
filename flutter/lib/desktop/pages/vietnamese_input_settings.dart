@@ -3,6 +3,7 @@ import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/widgets/vietnamese_input_help.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/vietnamese_input_model.dart';
+import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 
 /// Local option keys used to persist Vietnamese input preferences through
