@@ -203,6 +203,16 @@ jobs:
               Write-Host "Ingore the printer driver error."
           }
 
+      - name: Run Vietnamese input tests
+        # Run the unit + property tests for the client-side Vietnamese input
+        # composer (src/vietnamese_input). The release lib was just built by the
+        # "Build rustdesk" step above with the same feature set, so this reuses
+        # the warm target dir and only compiles the test harness. A test failure
+        # fails the job, guarding the composer against regressions.
+        shell: bash
+        run: |
+          cargo test --release --lib --features hwcodec,vram,flutter vietnamese_input -- --nocapture
+
       - name: find Runner.res
         # Windows: find Runner.res (compiled from ./flutter/windows/runner/Runner.rc), copy to ./Runner.res
         # Runner.rc does not contain actual version, but Runner.res does

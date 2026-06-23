@@ -19,6 +19,9 @@ pub mod unicode_norm;
 pub mod tone;
 pub mod config_parser;
 
+#[cfg(test)]
+mod integration_tests;
+
 pub use buffer::{CompositionBuffer, CompositionState};
 pub use composer::VietnameseComposer;
 pub use composer::DEFAULT_TIMEOUT;
