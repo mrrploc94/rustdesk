@@ -461,7 +461,9 @@ mod tests {
         const CODAS: &[&str] = &["", "c", "ch", "m", "n", "ng", "nh", "p", "t"];
 
         let mut seq = String::new();
-        seq.push_str(rng.pick(ONSETS));
+        // `pick` returns `&T`; for a `&[&str]` slice that is `&&str`, so deref
+        // once to obtain the `&str` that `push_str` expects.
+        seq.push_str(*rng.pick(ONSETS));
 
         let vowel = *rng.pick(VOWELS);
         seq.push(vowel);
@@ -478,7 +480,7 @@ mod tests {
         }
 
         // Optional coda consonant(s).
-        seq.push_str(rng.pick(CODAS));
+        seq.push_str(*rng.pick(CODAS));
 
         seq
     }
