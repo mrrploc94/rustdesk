@@ -151,8 +151,10 @@ class VietnameseInputModel extends ChangeNotifier {
     if (_enabled != enabled) {
       _enabled = enabled;
     }
-    final composition =
-        await bind.vietnameseInputGetComposition(sessionId: sessionId);
+    // The composer is process-global; no session id is forwarded. See the
+    // Rust `vietnamese_input_get_composition` doc comment for why the bridge
+    // function takes no `session_id` parameter (frb type-unification bug).
+    final composition = await bind.vietnameseInputGetComposition();
     _compositionPreview = composition;
     _isComposing = composition.isNotEmpty;
     notifyListeners();

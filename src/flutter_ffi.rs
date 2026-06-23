@@ -3013,11 +3013,16 @@ pub fn vietnamese_input_set_method(method: String) {
 ///
 /// Returns the buffered (not-yet-committed) composed text, or an empty string
 /// when nothing is being composed. Synchronous so the overlay can poll/read it
-/// cheaply on the UI thread. `session_id` identifies the remote session whose
-/// composition is being read; per-session routing is finalized alongside the
-/// keyboard hook, so the global composer's current buffer is returned here.
-pub fn vietnamese_input_get_composition(session_id: String) -> SyncReturn<String> {
-    let _ = session_id;
+/// cheaply on the UI thread. The composer is process-global, so no session
+/// identifier is needed here.
+///
+/// NOTE: this function intentionally takes NO `session_id` parameter. The
+/// flutter_rust_bridge codegen (1.80.1) unifies the resolved type of a given
+/// parameter name across all bridge functions; introducing a `session_id:
+/// String` here previously caused every `session_id: SessionID` (= uuid::Uuid)
+/// parameter in the whole bridge to be mis-generated as `String`, producing
+/// dozens of `E0308` type mismatches against `flutter_ffi.rs`.
+pub fn vietnamese_input_get_composition() -> SyncReturn<String> {
     let preview = crate::vietnamese_input::integration::composition_preview().unwrap_or_default();
     SyncReturn(preview)
 }
